@@ -1,0 +1,17 @@
+{
+  "name": "com.labust.marus2.core",
+  "version": "1.0.0",
+  "displayName": "MARUS2 Core",
+  "description": "Core systems, shared utilities, and base sensor/networking frameworks for MARUS2.",
+  "unity": "6000.3",
+  "unityRelease": "23f1",
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1"
+  },
+  "samples": [],
+  "author": {
+    "name": "LABUST",
+    "email": "",
+    "url": "http://labust.fer.hr/"
+  }
+}
