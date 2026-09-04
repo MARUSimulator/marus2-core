@@ -1,19 +1,53 @@
-# MARUS2 Core
+To install **MARUS2 Core** and its required core dependencies, add them directly to your Unity project's **`Packages/manifest.json`** file under the `"dependencies"` block:
 
-Core systems, shared utilities, and base sensor/networking frameworks for the MARUS2 simulator. Designed for Unity 6.
+```json
+{
+  "dependencies": {
+    "com.marus2.proto": "https://github.com/MARUSimulator/marus2-proto.git#csharp",
+    "com.marus2.core": "https://github.com/MARUSimulator/marus2-core.git"
+  }
+}
+```
 
-## Installation
+# Core usage
 
-This package is structured as a standard Unity Package Manager (UPM) package. You can install it directly into your Unity 6 project via Git URL:
+MARUS2 Core provides the foundational architecture for the MARUS2 marine robotics simulator in Unity, including networking, transform handling, marine physics, actuation, vehicle controllers, and sensor base abstractions.
 
-1. Open your Unity project.
-2. Navigate to **Window > Package Manager**.
-3. Click the **`+`** button in the top-left corner.
-4. Select **"Add package from git URL..."**.
-5. Paste the repository URL (optionally appending a version tag or branch, e.g., `#v1.0.0` or `#main`):
-   ```text
-   https://github.com/MARUSimulator/marus2-core.git
-   ```
+## ROS Connection
+
+Manages the central gRPC connection between Unity and the external ROS/ROS2 adapter (`grpc_ros_adapter`). It orchestrates background communication threads, connection lifecycles, and gRPC client creation for all sensor and actuator modules.
+
+## Time Handler
+
+Synchronizes Unity simulation time with external ROS time and clock topics, supporting deterministic simulation stepping and pause control.
+
+## TF Handler
+
+Manages the coordinate frame transformation tree (TF) between vehicles, sensors, and the global simulation frame, handling coordinate frame conversions between Unity's coordinate system and standard robotics conventions (NED/ENU).
+
+## Boat Physics & Buoyancy
+
+Simulates marine surface and subsurface vessel hydrodynamics, including watercraft mesh-based buoyancy, hydrodynamic drag, slamming forces, and wave surface interactions.
+
+## Actuators
+
+Provides propulsion and steering models for marine vehicles, including thrusters (`Thruster`), differential thruster controllers (`DifferentialThrusterController`), and dynamic motor response modeling.
+
+## Vehicle Controllers
+
+Primitive control interfaces for autonomous surface vehicles (`ASVPrimitiveController`), autonomous underwater vehicles (`AUVPrimitiveController`), and force/velocity interfaces (`VesselForceController`, `VesselVelocityController`).
+
+## Geographic Frame & GeoPoint
+
+Converts between real-world geodetic coordinates (WGS84 latitude, longitude, and altitude) and Unity Cartesian coordinates.
+
+## Raycast Job Helper & Sensor Base
+
+High-performance Burst-compatible raycasting job batching utilities and base classes for building custom sensors with minimal garbage collection.
+
+## Noise Distributions
+
+Configurable statistical noise models (Gaussian, uniform, random walk) for realistic sensor and actuation noise simulation.
 
 ---
 
@@ -43,7 +77,7 @@ git checkout csharp
 
 ### 2. Add Local Packages to Your Unity Project
 
-Link the local clones to your Unity test project via UPM so any changes you make in your IDE are immediately compiled by the Unity editor:
+Link the local clones to your Unity test project via UPM:
 
 1. Open your Unity 6 test project.
 2. Open **Window > Package Manager**.
@@ -56,8 +90,8 @@ Alternatively, add them directly to your project's `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.labust.marus2.proto": "file:../../path/to/marus2-proto",
-    "com.labust.marus2.core": "file:../../path/to/marus2-core"
+    "com.marus2.proto": "file:../../path/to/marus2-proto",
+    "com.marus2.core": "file:../../path/to/marus2-core"
   }
 }
 ```
