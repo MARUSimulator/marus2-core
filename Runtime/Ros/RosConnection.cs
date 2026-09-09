@@ -14,6 +14,7 @@
 
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading;
@@ -69,7 +70,8 @@ namespace Marus.Networking
         GrpcChannel _streamingChannel;
 
         public GrpcChannel StreamingChannel => _streamingChannel;
-        Dictionary<Type, ClientBase> _grpcClients;
+        readonly ConcurrentDictionary<Type, ClientBase> _grpcClients = new ConcurrentDictionary<Type, ClientBase>();
+        readonly object _clientsLock = new object();
         volatile bool _connected;
         public bool IsConnected => _connected;
 
@@ -90,7 +92,7 @@ namespace Marus.Networking
         public static Func<HttpMessageHandler> CustomHttpHandlerFactory { get; set; }
 
         /// <summary>
-        /// Adds new client of type if it does not currently exists.
+        /// Adds new client of type if it does not currently exist.
         /// </summary>
         public T AddNewClient<T>() where T : ClientBase
         {
@@ -98,11 +100,23 @@ namespace Marus.Networking
             if (_grpcClients.TryGetValue(t, out var clientBase))
                 return clientBase as T;
 
-            // Dynamically create the client using reflection.
-            // This removes the need for RosConnection to know about the module in advance.
-            var client = Activator.CreateInstance(typeof(T), _streamingChannel) as T;
-            _grpcClients.Add(t, client);
-            return client;
+            lock (_clientsLock)
+            {
+                if (_grpcClients.TryGetValue(t, out clientBase))
+                    return clientBase as T;
+
+                if (_streamingChannel == null)
+                {
+                    Debug.LogError($"Cannot create gRPC client {typeof(T).Name}: StreamingChannel is null.");
+                    return null;
+                }
+
+                // Dynamically create the client using reflection.
+                // This removes the need for RosConnection to know about the module in advance.
+                var client = Activator.CreateInstance(typeof(T), _streamingChannel) as T;
+                _grpcClients[t] = client;
+                return client;
+            }
         }
 
         /// <summary>
@@ -148,7 +162,7 @@ namespace Marus.Networking
             _cancellationTokenSource = new CancellationTokenSource();
             _cancellationToken = _cancellationTokenSource.Token;
 
-            _grpcClients = new Dictionary<Type, ClientBase>();
+            _grpcClients.Clear();
 
             CreateSingletons();
             Connect();
@@ -287,6 +301,10 @@ namespace Marus.Networking
         {
             Debug.Log("Awaiting connection with ROS Server...");
             var pingClient = GetClient<PingClient>();
+            if (pingClient == null)
+            {
+                return false;
+            }
             try
             {
                 var response = pingClient.Ping(new PingMsg(), deadline: DateTime.UtcNow.AddSeconds(connectionTimeout), cancellationToken: _cancellationToken);
@@ -334,6 +352,7 @@ namespace Marus.Networking
             }
             finally
             {
+                _grpcClients.Clear();
                 _streamingChannel = null;
                 _cancellationTokenSource?.Dispose();
                 _cancellationTokenSource = null;
