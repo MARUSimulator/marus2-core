@@ -26,10 +26,20 @@ namespace Marus.Ocean
     {
         bool crestInScene = false;
 
-        void Awake()
+        protected override void Awake()
         {
+            base.Awake();
+            if (instance != this)
+            {
+                return;
+            }
+
     #if CREST_OCEAN
+#if UNITY_6000_0_OR_NEWER
+            if (Object.FindFirstObjectByType<OceanRenderer>() != null)
+#else
             if (Object.FindObjectOfType<OceanRenderer>() != null)
+#endif
             {
                 crestInScene = true;
             }

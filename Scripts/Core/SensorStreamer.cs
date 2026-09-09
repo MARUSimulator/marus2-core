@@ -253,7 +253,7 @@ namespace Marus.Core
         private void OnDisable()
         {
             _killSendMsgsThread = true;
-            _sendMsgThread.Join();
+            _sendMsgThread?.Join(500);
             _sendMsgThread = null;
         }
 

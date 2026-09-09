@@ -30,8 +30,14 @@ public class AgentManager : Singleton<AgentManager>
     public GameObject activeAgent;
 
     int _index;
-    private void Awake()
+    protected override void Awake()
     {
+        base.Awake();
+        if (instance != this)
+        {
+            return;
+        }
+
         agents ??= new List<GameObject>();
         if (agents.Count > 0)
         {

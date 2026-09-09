@@ -30,7 +30,7 @@ namespace Marus.NoiseDistributions
         private static List<Type> _noiseTypes;
 
         /// <summary>
-        /// One instance of the noise class per noise type 
+        /// One instance of the noise class per noise type
         /// </summary>
         /// <typeparam name="string"></typeparam>
         /// <typeparam name="INoise"></typeparam>
@@ -42,7 +42,7 @@ namespace Marus.NoiseDistributions
             = new HashSet<string>();
 
         /// <summary>
-        /// Compiled getters and setters for noise instances 
+        /// Compiled getters and setters for noise instances
         /// </summary>
         /// <param name="_noiseParameterAccessors"></param>
         /// <typeparam name="(string"></typeparam>
@@ -53,7 +53,7 @@ namespace Marus.NoiseDistributions
 
 
         /// <summary>
-        /// List of allowed types for noise fields 
+        /// List of allowed types for noise fields
         /// </summary>
         /// <value></value>
         readonly static List<Type> _allowedTypes = new List<Type>
@@ -66,11 +66,11 @@ namespace Marus.NoiseDistributions
         /// </summary>
         /// <value></value>
         readonly static List<string> _excludeAssemblies = new List<string>
-        { 
+        {
             "EditMode", "PlayMode", "TestUtils"
         };
 
-        static BindingFlags _fieldFlags = 
+        static BindingFlags _fieldFlags =
             BindingFlags.Instance | BindingFlags.Public;
 
 
@@ -79,7 +79,7 @@ namespace Marus.NoiseDistributions
         /// </summary>
         public static IReadOnlyList<Type> NoiseTypes
         {
-            get 
+            get
             {
                 if (_noiseTypes == null)
                 {
@@ -124,11 +124,11 @@ namespace Marus.NoiseDistributions
             // hacky removal of test assemblies
             var assemblies = appDomain.GetAssemblies().Where(x =>
                 !_excludeAssemblies.Contains(x.GetName().Name));
-            _noiseTypes = assemblies.Aggregate(new List<Type>(), (curr, x) => 
+            _noiseTypes = assemblies.Aggregate(new List<Type>(), (curr, x) =>
             {
                 curr.AddRange(
-                    x.GetTypes().Where(typ => 
-                        typeof(INoise).IsAssignableFrom(typ) 
+                    x.GetTypes().Where(typ =>
+                        typeof(INoise).IsAssignableFrom(typ)
                         && typ.AssemblyQualifiedName != typeof(INoise).AssemblyQualifiedName
                     )
                 );
@@ -170,8 +170,8 @@ namespace Marus.NoiseDistributions
             {
                 return noise;
             }
-            
-            var typ = NoiseTypes.FirstOrDefault(x => 
+
+            var typ = NoiseTypes.FirstOrDefault(x =>
                     x.FullName == typeFullName || x.Name == typeFullName);
 
             if (typ == null)

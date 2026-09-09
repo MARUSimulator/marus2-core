@@ -118,8 +118,14 @@ namespace Marus.Networking
             return AddNewClient<T>();
         }
 
-        private void Awake()
+        protected override void Awake()
         {
+            base.Awake();
+            if (instance != this)
+            {
+                return;
+            }
+
             ThreadPool.SetMinThreads(12, 100);
 
             // Enable HTTP/2 cleartext (h2c) support for standard SocketsHttpHandler/HttpClientHandler fallback

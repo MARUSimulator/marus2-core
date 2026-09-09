@@ -90,7 +90,7 @@ namespace Marus.Networking
         {
             try
             {
-                while (!RosConnection.Instance.IsConnected)
+                while (RosConnection.HasInstance && !RosConnection.Instance.IsConnected)
                 {
                     if (RosConnection.Instance.CancellationToken.IsCancellationRequested)
                     {
@@ -98,10 +98,16 @@ namespace Marus.Networking
                     }
                     Thread.Sleep(1000);
                 }
+
+                if (!RosConnection.HasInstance || RosConnection.Instance.CancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
                 // invoke rpc call
                 var stream = _streamHandle.ResponseStream;
 
-                while (await stream.MoveNext(RosConnection.Instance.CancellationToken))
+                while (RosConnection.HasInstance && await stream.MoveNext(RosConnection.Instance.CancellationToken))
                 {
                     var current = stream.Current;
                     _responseBuffer.Enqueue(current);
