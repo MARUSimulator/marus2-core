@@ -89,12 +89,22 @@ namespace Marus.Core
 
         void OnEnable()
         {
-            SensorSampler.Instance.EnableCallback(this);
+            if (SensorSampler.HasInstance)
+            {
+                SensorSampler.Instance.EnableCallback(this);
+            }
+            else if (Application.isPlaying && !SingletonManager.IsQuitting)
+            {
+                SensorSampler.Instance?.EnableCallback(this);
+            }
         }
 
         void OnDisable()
         {
-            SensorSampler.Instance.DisableCallback(this);
+            if (SensorSampler.HasInstance)
+            {
+                SensorSampler.Instance?.DisableCallback(this);
+            }
         }
 
     }
