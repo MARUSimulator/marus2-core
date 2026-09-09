@@ -88,17 +88,36 @@ namespace Marus.Networking
         /// <returns></returns>
         async void _HandleResponse()
         {
-            while (!RosConnection.Instance.IsConnected)
+            try
             {
-                Thread.Sleep(1000);
-            }
-            // invoke rpc call
-            var stream = _streamHandle.ResponseStream;
+                while (!RosConnection.Instance.IsConnected)
+                {
+                    if (RosConnection.Instance.CancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    Thread.Sleep(1000);
+                }
+                // invoke rpc call
+                var stream = _streamHandle.ResponseStream;
 
-            while (await stream.MoveNext(RosConnection.Instance.CancellationToken))
+                while (await stream.MoveNext(RosConnection.Instance.CancellationToken))
+                {
+                    var current = stream.Current;
+                    _responseBuffer.Enqueue(current);
+                }
+            }
+            catch (OperationCanceledException)
             {
-                var current = stream.Current;
-                _responseBuffer.Enqueue(current);
+                // Normal cancellation during shutdown
+            }
+            catch (RpcException e) when (e.StatusCode == StatusCode.Cancelled)
+            {
+                // Normal cancellation during shutdown
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning($"ServerStreamer exception: {e.Message}");
             }
         }
 

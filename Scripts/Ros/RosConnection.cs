@@ -15,8 +15,10 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Threading;
 using Grpc.Core;
+using Grpc.Net.Client;
 using UnityEngine;
 using Marus.Utils;
 using Marus.CustomInspector;
@@ -64,9 +66,9 @@ namespace Marus.Networking
         public double DefaultLatitude = 45;
         public double DefaultLongitude = 15;
 
-        Channel _streamingChannel;
+        GrpcChannel _streamingChannel;
 
-        public Channel StreamingChannel => _streamingChannel;
+        public GrpcChannel StreamingChannel => _streamingChannel;
         Dictionary<Type, ClientBase> _grpcClients;
         volatile bool _connected;
         public bool IsConnected => _connected;
@@ -74,12 +76,18 @@ namespace Marus.Networking
         volatile bool _isConnecting;
         public bool IsConnecting => _isConnecting;
 
+        CancellationTokenSource _cancellationTokenSource;
         CancellationToken _cancellationToken;
         public CancellationToken CancellationToken => _cancellationToken;
 
         private SimulationControlClient _simulationController;
 
-        public event Action<Channel> OnConnected;
+        public event Action<ChannelBase> OnConnected;
+
+        /// <summary>
+        /// Optional custom HttpMessageHandler factory (e.g. for testing with mock handlers)
+        /// </summary>
+        public static Func<HttpMessageHandler> CustomHttpHandlerFactory { get; set; }
 
         /// <summary>
         /// Adds new client of type if it does not currently exists.
@@ -113,21 +121,75 @@ namespace Marus.Networking
         private void Awake()
         {
             ThreadPool.SetMinThreads(12, 100);
-            Grpc.Core.GrpcEnvironment.SetThreadPoolSize(10);
-            var options = new List<ChannelOption>
+
+            // Enable HTTP/2 cleartext (h2c) support for standard SocketsHttpHandler/HttpClientHandler fallback
+            AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
+
+            var address = serverIP.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || serverIP.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                ? $"{serverIP}:{serverPort}"
+                : $"http://{serverIP}:{serverPort}";
+
+            var httpHandler = CreateHttpMessageHandler();
+            var options = new GrpcChannelOptions
             {
-                new ChannelOption(ChannelOptions.MaxSendMessageLength, 1024*1024*100),
-                new ChannelOption(ChannelOptions.MaxReceiveMessageLength, 1024*1024*100),
+                HttpHandler = httpHandler,
+                MaxSendMessageSize = 1024 * 1024 * 100,
+                MaxReceiveMessageSize = 1024 * 1024 * 100,
+                DisposeHttpClient = true
             };
-            _streamingChannel = new Channel(serverIP, serverPort, ChannelCredentials.Insecure, options);
+
+            _streamingChannel = GrpcChannel.ForAddress(address, options);
+            _cancellationTokenSource = new CancellationTokenSource();
+            _cancellationToken = _cancellationTokenSource.Token;
 
             _grpcClients = new Dictionary<Type, ClientBase>();
-            _cancellationToken = _streamingChannel.ShutdownToken;
 
             CreateSingletons();
             Connect();
 
             StartCoroutine(WhileConnectionAwait());
+        }
+
+        /// <summary>
+        /// Creates an HttpMessageHandler compatible with Unity.
+        /// In Unity 6000.5 and above, utilizes UnityEngine.Networking.UnityHttpMessageHandler with HTTP/2 support.
+        /// Falls back to standard HttpClientHandler when not running in Unity 6000.5+.
+        /// </summary>
+        private HttpMessageHandler CreateHttpMessageHandler()
+        {
+            if (CustomHttpHandlerFactory != null)
+            {
+                return CustomHttpHandlerFactory();
+            }
+
+#if UNITY_6000_5_OR_NEWER
+            var handler = new UnityEngine.Networking.UnityHttpMessageHandler();
+            handler.HttpForcedVersion = UnityEngine.Networking.HttpForcedVersion.HTTP2;
+            return handler;
+#else
+            var unityHandlerType = Type.GetType("UnityEngine.Networking.UnityHttpMessageHandler, UnityEngine.UnityWebRequestModule")
+                ?? Type.GetType("UnityEngine.Networking.UnityHttpMessageHandler, UnityEngine.CoreModule");
+            if (unityHandlerType != null)
+            {
+                var handler = (HttpMessageHandler)Activator.CreateInstance(unityHandlerType);
+                var prop = unityHandlerType.GetProperty("HttpForcedVersion");
+                if (prop != null)
+                {
+                    try
+                    {
+                        var http2Value = Enum.Parse(prop.PropertyType, "HTTP2");
+                        prop.SetValue(handler, http2Value);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning($"Could not set HttpForcedVersion on UnityHttpMessageHandler: {ex.Message}");
+                    }
+                }
+                return handler;
+            }
+
+            return new HttpClientHandler();
+#endif
         }
 
         public void Connect()
@@ -221,7 +283,7 @@ namespace Marus.Networking
             var pingClient = GetClient<PingClient>();
             try
             {
-                var response = pingClient.Ping(new PingMsg(), deadline: DateTime.UtcNow.AddSeconds(connectionTimeout));
+                var response = pingClient.Ping(new PingMsg(), deadline: DateTime.UtcNow.AddSeconds(connectionTimeout), cancellationToken: _cancellationToken);
                 if (response.Value == 1)
                 {
                     Debug.Log("Connected to the ROS Server");
@@ -232,35 +294,47 @@ namespace Marus.Networking
             {
                 Debug.Log($"Could not establish a connection to ROS Server. {e.Message}");
             }
+            catch (Exception e)
+            {
+                Debug.Log($"Could not establish a connection to ROS Server. {e.Message}");
+            }
             return false;
         }
 
-        async void OnDisable()
+        void OnDisable()
         {
             if (_streamingChannel == null)
             {
                 return;
             }
 
-            Debug.Log("Shutting down grpc clients and channel. Await for sucessfull confirmation...");
-            var awaitable = _streamingChannel?.ShutdownAsync();
+            Debug.Log("Shutting down grpc clients and channel...");
+            try
+            {
+                _cancellationTokenSource?.Cancel();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"Exception during cancellation: {ex.Message}");
+            }
 
-            int time = 0;
-            while (!awaitable.IsCompleted && time < 3)
+            try
             {
-                Thread.Sleep(1000);
-                time++;
+                _streamingChannel?.Dispose();
             }
-            if (awaitable.IsCompleted)
+            catch (Exception ex)
             {
-                Debug.Log("Shut down of grpc clients and channel successfull.");
-                await awaitable;
+                Debug.LogWarning($"Exception during GrpcChannel dispose: {ex.Message}");
             }
-            else
+            finally
             {
-                awaitable.Dispose();
-                Debug.Log("Shut down of grpc clients and channel failed. Some client does not have cancelation token set.");
+                _streamingChannel = null;
+                _cancellationTokenSource?.Dispose();
+                _cancellationTokenSource = null;
+                _connected = false;
+                _isConnecting = false;
             }
+            Debug.Log("Shut down of grpc channel successful.");
         }
     }
 }
