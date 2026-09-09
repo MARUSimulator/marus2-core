@@ -68,7 +68,7 @@ namespace Marus.Networking
         public void StartStream(AsyncServerStreamingCall<T> streamHandle)
         {
             _streamHandle = streamHandle;
-            _handleStreamThread = new Thread(_HandleResponse);
+            _handleStreamThread = new Thread(_HandleResponse) { IsBackground = true };
             _handleStreamThread.Start();
             IsStreaming = true;
         }
@@ -113,6 +113,10 @@ namespace Marus.Networking
                     _responseBuffer.Enqueue(current);
                 }
             }
+            catch (ThreadAbortException)
+            {
+                // Normal thread termination during domain reload / play mode exit
+            }
             catch (OperationCanceledException)
             {
                 // Normal cancellation during shutdown
@@ -123,6 +127,10 @@ namespace Marus.Networking
             }
             catch (Exception e)
             {
+                if (e is ThreadAbortException || e is OperationCanceledException)
+                {
+                    return;
+                }
                 UnityEngine.Debug.LogWarning($"ServerStreamer exception: {e.Message}");
             }
         }

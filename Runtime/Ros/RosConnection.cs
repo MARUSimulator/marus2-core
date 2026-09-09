@@ -77,6 +77,7 @@ namespace Marus.Networking
 
         volatile bool _isConnecting;
         public bool IsConnecting => _isConnecting;
+        Thread _connectThread;
 
         CancellationTokenSource _cancellationTokenSource;
         CancellationToken _cancellationToken;
@@ -217,12 +218,25 @@ namespace Marus.Networking
             if (!_connected && !_isConnecting)
             {
                 _isConnecting = true;
-                var t = new Thread(() =>
+                _connectThread = new Thread(() =>
                 {
-                    _connected = TryConnect();
-                    _isConnecting = false;
-                });
-                t.Start();
+                    try
+                    {
+                        _connected = TryConnect();
+                    }
+                    catch (ThreadAbortException)
+                    {
+                        // Domain reload or thread abort - exit gracefully
+                    }
+                    finally
+                    {
+                        _isConnecting = false;
+                    }
+                })
+                {
+                    IsBackground = true
+                };
+                _connectThread.Start();
             }
         }
 
@@ -314,12 +328,28 @@ namespace Marus.Networking
                     return true;
                 }
             }
+            catch (ThreadAbortException)
+            {
+                return false;
+            }
+            catch (OperationCanceledException)
+            {
+                return false;
+            }
             catch (RpcException e)
             {
+                if (e.StatusCode == StatusCode.Cancelled)
+                {
+                    return false;
+                }
                 Debug.Log($"Could not establish a connection to ROS Server. {e.Message}");
             }
             catch (Exception e)
             {
+                if (e is ThreadAbortException || e is OperationCanceledException)
+                {
+                    return false;
+                }
                 Debug.Log($"Could not establish a connection to ROS Server. {e.Message}");
             }
             return false;
@@ -340,6 +370,16 @@ namespace Marus.Networking
             catch (Exception ex)
             {
                 Debug.LogWarning($"Exception during cancellation: {ex.Message}");
+            }
+
+            if (_connectThread != null && _connectThread.IsAlive)
+            {
+                try
+                {
+                    _connectThread.Join(200);
+                }
+                catch { }
+                _connectThread = null;
             }
 
             try
