@@ -17,14 +17,20 @@ using System.Collections.Generic;
 using Marus.Utils;
 using UnityEngine;
 
+#if UNITY_6000_5_OR_NEWER
+using SensorId = UnityEngine.EntityId;
+#else
+using SensorId = System.Int32;
+#endif
+
 namespace Marus.Core
 {
     [DefaultExecutionOrder(100)]
     public class SensorSampler : Singleton<SensorSampler>
     {
 
-        Dictionary<int, SensorCallback> _sensorCallbacks = new Dictionary<int, SensorCallback>();
-        Dictionary<int, double> _timeOfLastCallback = new Dictionary<int, double>();
+        Dictionary<SensorId, SensorCallback> _sensorCallbacks = new Dictionary<SensorId, SensorCallback>();
+        Dictionary<SensorId, double> _timeOfLastCallback = new Dictionary<SensorId, double>();
 
         void FixedUpdate()
         {
@@ -53,9 +59,19 @@ namespace Marus.Core
             return Time.fixedTimeAsDouble >= lastTime + 1 / sensor.SampleFrequency;
         }
 
+        private static SensorId GetSensorId(SensorBase sensor)
+        {
+#if UNITY_6000_5_OR_NEWER
+            return sensor.GetEntityId();
+#else
+            return sensor.GetInstanceID();
+#endif
+        }
+
         public void AddSensorCallback(SensorBase sensor, Action callback)
         {
-            if (_sensorCallbacks.ContainsKey(sensor.GetInstanceID()))
+            var id = GetSensorId(sensor);
+            if (_sensorCallbacks.ContainsKey(id))
                 return;
 
             var sensorCallback = new SensorCallback
@@ -64,17 +80,17 @@ namespace Marus.Core
                 sensor = sensor,
                 active = true
             };
-            _sensorCallbacks.Add(sensor.GetInstanceID(), sensorCallback);
+            _sensorCallbacks.Add(id, sensorCallback);
         }
 
         private void RemoveSensorCallback(SensorBase sensor)
         {
-            _sensorCallbacks.Remove(sensor.GetInstanceID());
+            _sensorCallbacks.Remove(GetSensorId(sensor));
         }
 
         internal void DisableCallback(SensorBase sensor)
         {
-            if (_sensorCallbacks.TryGetValue(sensor.GetInstanceID(), out var callback))
+            if (_sensorCallbacks.TryGetValue(GetSensorId(sensor), out var callback))
             {
                 callback.active = false;
             }
@@ -82,7 +98,7 @@ namespace Marus.Core
 
         internal void EnableCallback(SensorBase sensor)
         {
-            if (_sensorCallbacks.TryGetValue(sensor.GetInstanceID(), out var callback))
+            if (_sensorCallbacks.TryGetValue(GetSensorId(sensor), out var callback))
             {
                 callback.active = true;
             }

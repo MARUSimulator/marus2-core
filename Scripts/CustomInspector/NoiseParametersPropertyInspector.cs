@@ -232,7 +232,11 @@ public class NoiseParametersPropertyInspector : PropertyDrawer
 
     private string GetPropertyId(SerializedProperty property)
     {
+#if UNITY_6000_5_OR_NEWER
+        return property.serializedObject.targetObject.GetEntityId().ToString() + property.name;
+#else
         return property.serializedObject.targetObject.GetInstanceID().ToString() + property.name;
+#endif
     }
 
 

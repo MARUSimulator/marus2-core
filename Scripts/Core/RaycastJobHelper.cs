@@ -18,7 +18,11 @@ using System.Collections.Generic;
 using Marus.Core;
 using Unity.Collections;
 using Unity.Jobs;
-using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using ObjectId = UnityEngine.EntityId;
+#else
+using ObjectId = System.Int32;
+#endif
 
 namespace Marus.Core
 {
@@ -225,7 +229,7 @@ namespace Marus.Core
         public float SampleFrequency;
 
         Action<NativeArray<Vector3>, NativeArray<T>> _onFinishCallback;
-        static Dictionary<int, Func<RaycastHit, Vector3, int, T>> _getResultFromHit;
+        static Dictionary<ObjectId, Func<RaycastHit, Vector3, int, T>> _getResultFromHit;
 
 
         public RaycastJobHelper(GameObject obj, NativeArray<Vector3> directions,
@@ -256,9 +260,13 @@ namespace Marus.Core
         {
             if (_getResultFromHit == null)
             {
-                _getResultFromHit = new Dictionary<int, Func<RaycastHit, Vector3, int, T>>();
+                _getResultFromHit = new Dictionary<ObjectId, Func<RaycastHit, Vector3, int, T>>();
             }
+#if UNITY_6000_5_OR_NEWER
+            _getResultFromHit.Add(_obj.GetEntityId(), getResultFromHit);
+#else
             _getResultFromHit.Add(_obj.GetInstanceID(), getResultFromHit);
+#endif
         }
 
         public void RaycastSync()
@@ -342,7 +350,11 @@ namespace Marus.Core
             readback.directions = _directionsLocal;
             readback.position = transform.position;
             readback.rotation = transform.rotation;
+#if UNITY_6000_5_OR_NEWER
+            readback.objectId = _obj.GetEntityId();
+#else
             readback.objectId = _obj.GetInstanceID();
+#endif
             readback.minDistance = _minDistance;
             return readback.Schedule(_hits.Length, 10, _raycastHandle);
         }
@@ -365,7 +377,7 @@ namespace Marus.Core
 
         // Job cannot have reference type fields, so it calls one global static method to get result
         // This method then decides what Func to call
-        public static T GetResultFromHit(int objId, RaycastHit hit, Vector3 direction, int index)
+        public static T GetResultFromHit(ObjectId objId, RaycastHit hit, Vector3 direction, int index)
         {
             return _getResultFromHit[objId](hit, direction, index);
         }
@@ -398,7 +410,7 @@ namespace Marus.Core
             public NativeArray<Vector3> directions;
             public NativeArray<T> results;
             public NativeArray<Vector3> points;
-            public int objectId;
+            public ObjectId objectId;
             public Vector3 position;
             public Quaternion rotation;
             public float minDistance;

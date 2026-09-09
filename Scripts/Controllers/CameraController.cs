@@ -58,7 +58,9 @@ public class CameraController : MonoBehaviour
         if (XRSettings.enabled)
         {
             // Disable XR temporarily so we can change the transform of the camera.
+#if !UNITY_6000_0_OR_NEWER
             XRSettings.enabled = false;
+#endif
             // The VR camera is moved in local space, so we can move the camera if we move its parent we create instead.
             var parent = new GameObject("VRCameraOffset");
             parent.transform.parent = _targetTransform.parent;
@@ -72,7 +74,9 @@ public class CameraController : MonoBehaviour
             _targetTransform.localScale = Vector3.one;
             // We want to manipulate this transform.
             _targetTransform = parent.transform;
+#if !UNITY_6000_0_OR_NEWER
             XRSettings.enabled = true;
+#endif
 
             // Seems like the best place to put this for now. Most XR debugging happens using this component.
             XRSettings.useOcclusionMesh = !_debug.disableOcclusionMesh;
