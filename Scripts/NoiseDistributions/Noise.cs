@@ -38,6 +38,9 @@ namespace Marus.NoiseDistributions
         private static Dictionary<string, INoise> _noiseInstances
             = new Dictionary<string, INoise>();
 
+        private static readonly HashSet<string> _missingNoiseTypesLogged
+            = new HashSet<string>();
+
         /// <summary>
         /// Compiled getters and setters for noise instances 
         /// </summary>
@@ -93,11 +96,21 @@ namespace Marus.NoiseDistributions
         /// <returns></returns>
         public static float Sample(in NoiseParameters parameters)
         {
+            if (string.IsNullOrEmpty(parameters.NoiseTypeFullName)
+                || parameters.NoiseTypeFullName == typeof(NoNoise).FullName
+                || parameters.NoiseTypeFullName.EndsWith("NoNoise"))
+            {
+                return 0f;
+            }
+
             var instance = GetNoiseInstance(parameters.NoiseTypeFullName);
             if (instance == null)
             {
-                Debug.Log($"Noise instance with assembly name {parameters.NoiseTypeFullName} does not exist");
-                return 0;
+                if (_missingNoiseTypesLogged.Add(parameters.NoiseTypeFullName))
+                {
+                    Debug.LogWarning($"Noise instance with type name '{parameters.NoiseTypeFullName}' does not exist");
+                }
+                return 0f;
             }
             SetInstanceParams(instance, in parameters);
             return instance.Sample();
@@ -127,15 +140,31 @@ namespace Marus.NoiseDistributions
 
         private static void SetInstanceParams(INoise instance, in NoiseParameters parameters)
         {
-            for (var i = 0; i < parameters.ParameterKeys.Count; i++)
+            if (parameters.ParameterKeys == null || parameters.ParameterValues == null)
+            {
+                return;
+            }
+
+            var count = Math.Min(parameters.ParameterKeys.Count, parameters.ParameterValues.Count);
+            for (var i = 0; i < count; i++)
             {
                 var key = parameters.ParameterKeys[i];
                 var value = parameters.ParameterValues[i];
-                _noiseParameterAccessors[(parameters.NoiseTypeFullName, key)].Set(instance, value);
+                if (_noiseParameterAccessors.TryGetValue((parameters.NoiseTypeFullName, key), out var accessor))
+                {
+                    accessor.Set(instance, value);
+                }
             }
         }
         private static INoise GetNoiseInstance(string typeFullName)
         {
+            if (string.IsNullOrEmpty(typeFullName)
+                || typeFullName == typeof(NoNoise).FullName
+                || typeFullName.EndsWith("NoNoise"))
+            {
+                typeFullName = typeof(NoNoise).FullName;
+            }
+
             INoise noise;
             if (_noiseInstances.TryGetValue(typeFullName, out noise))
             {
@@ -143,7 +172,7 @@ namespace Marus.NoiseDistributions
             }
             
             var typ = NoiseTypes.FirstOrDefault(x => 
-                    x.FullName == typeFullName);
+                    x.FullName == typeFullName || x.Name == typeFullName);
 
             if (typ == null)
             {
