@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "displayName": "MARUS2 Core",
   "description": "Core systems, shared utilities, and base sensor/networking frameworks for MARUS2.",
-  "unity": "6000.3",
-  "unityRelease": "23f1",
+  "unity": "6000.5",
+  "unityRelease": "11f1",
   "dependencies": {
     "com.unity.nuget.newtonsoft-json": "3.2.1",
     "com.marus2.proto": "1.0.0"
