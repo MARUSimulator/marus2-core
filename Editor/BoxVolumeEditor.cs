@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#if UNITY_EDITOR
 using UnityEditor;
 using UnityEditor.IMGUI.Controls;
 using UnityEngine;
@@ -102,4 +101,3 @@ public class BoundsEditor : Editor
 
     }
 }
-#endif

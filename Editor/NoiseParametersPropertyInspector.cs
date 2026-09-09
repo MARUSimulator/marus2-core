@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -236,9 +235,8 @@ public class NoiseParametersPropertyInspector : PropertyDrawer
         return property.serializedObject.targetObject.GetEntityId().ToString() + property.name;
 #else
         return property.serializedObject.targetObject.GetInstanceID().ToString() + property.name;
-#endif
+
     }
 
 
 }
-#endif

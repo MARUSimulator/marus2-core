@@ -1,12 +1,10 @@
 using System.Collections;
 using System.Collections.Generic;
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
+
 using UnityEngine;
 using System;
 
-#if UNITY_EDITOR
 public class CallMethodInChildren : MonoBehaviour
 {
     public String callbackName;
@@ -36,4 +34,3 @@ public class CallMethodInChildrenInspector : Editor
         }
     }
 }
-#endif

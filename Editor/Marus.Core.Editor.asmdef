@@ -1,0 +1,18 @@
+{
+    "name": "Marus.Core.Editor",
+    "rootNamespace": "",
+    "references": [
+        "GUID:c47c588af94a289439184f626352a939"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

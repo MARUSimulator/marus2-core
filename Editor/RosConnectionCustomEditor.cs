@@ -13,13 +13,11 @@
 // limitations under the License.
 
 using UnityEngine;
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
+
 
 namespace Marus.Networking
 {
-#if UNITY_EDITOR
     [CustomEditor(typeof(RosConnection))]
     public class RosConnectionCustomEditor : Editor
     {
@@ -39,5 +37,5 @@ namespace Marus.Networking
             }
         }
     }
-#endif
+
 }
