@@ -235,8 +235,6 @@ public class NoiseParametersPropertyInspector : PropertyDrawer
         return property.serializedObject.targetObject.GetEntityId().ToString() + property.name;
 #else
         return property.serializedObject.targetObject.GetInstanceID().ToString() + property.name;
-
+#endif
     }
-
-
 }
