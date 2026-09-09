@@ -19,7 +19,7 @@ using UnityEngine.XR;
 /// <summary>
 /// A simple and dumb camera script that can be controlled using WASD and the mouse.
 /// </summary>
-[RequireComponent(typeof(Camera))] 
+[RequireComponent(typeof(Camera))]
 public class CameraController : MonoBehaviour
 {
     public float linSpeed = 2f;
@@ -102,7 +102,7 @@ public class CameraController : MonoBehaviour
         foreach (var item in keycodes)
         {
             if (Input.GetKey(item))
-            UpdateMovement(dt, item, speed);    
+            UpdateMovement(dt, item, speed);
         }
 
         // These aren't useful and can break for XR hardware.

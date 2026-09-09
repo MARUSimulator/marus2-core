@@ -18,6 +18,7 @@ using System.Collections.Generic;
 using Marus.Core;
 using Unity.Collections;
 using Unity.Jobs;
+using UnityEngine;
 #if UNITY_6000_5_OR_NEWER
 using ObjectId = UnityEngine.EntityId;
 #else

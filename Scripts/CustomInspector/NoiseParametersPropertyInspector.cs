@@ -29,11 +29,11 @@ public class NoiseParametersPropertyInspector : PropertyDrawer
     float _colapsedHeight;
     float deltaLine;
 
-    BindingFlags _fieldFlags = 
+    BindingFlags _fieldFlags =
         BindingFlags.Instance | BindingFlags.Public;
 
 
-    static Dictionary<string, bool> _isExpanded = 
+    static Dictionary<string, bool> _isExpanded =
         new Dictionary<string, bool>();
     static Dictionary<string, int> _selectedIndex =
         new Dictionary<string, int>();
