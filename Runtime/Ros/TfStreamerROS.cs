@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System;
 using Marus.Networking;
 using UnityEngine;
 using Marus.Core;
@@ -136,6 +137,34 @@ namespace Marus.ROS
 
 
 
+        private bool _isSubscribedToRos;
+
+        /// <summary>
+        /// Ensures TfStreamerROS is cleanly subscribed to RosConnection events,
+        /// even if GameObjects initialize in non-deterministic order or dynamically at runtime.
+        /// </summary>
+        private void SubscribeToRos()
+        {
+            if (_isSubscribedToRos) return;
+            if (RosConnection.HasInstance)
+            {
+                RosConnection.Instance.OnConnected += HandleConnected;
+                RosConnection.Instance.OnDisconnected += HandleDisconnected;
+                _isSubscribedToRos = true;
+            }
+        }
+
+        private void UnsubscribeFromRos()
+        {
+            if (!_isSubscribedToRos) return;
+            if (RosConnection.HasInstance)
+            {
+                RosConnection.Instance.OnConnected -= HandleConnected;
+                RosConnection.Instance.OnDisconnected -= HandleDisconnected;
+            }
+            _isSubscribedToRos = false;
+        }
+
         public void Start()
         {
             address = "/tf";
@@ -144,12 +173,59 @@ namespace Marus.ROS
                 ParentFrameId = "map";
             }
 
-            streamHandle = streamingClient?.PublishFrame(cancellationToken:RosConnection.Instance.CancellationToken);
+            SubscribeToRos();
+
+            if (RosConnection.HasInstance && RosConnection.Instance.IsConnected)
+            {
+                StartStream();
+            }
+        }
+
+        private double _lastStreamAttempt = -100;
+
+        /// <summary>
+        /// Re-initiates the TF stream immediately upon reconnection on the new TfClient.
+        /// </summary>
+        private void HandleConnected(Grpc.Core.ChannelBase channel)
+        {
+            _lastStreamAttempt = -100;
+            StartStream();
+        }
+
+        private void HandleDisconnected()
+        {
+            streamHandle = null;
+        }
+
+        void OnDestroy()
+        {
+            UnsubscribeFromRos();
+        }
+
+        /// <summary>
+        /// Acquires the active TfClient from RosConnection and opens a new PublishFrame stream.
+        /// </summary>
+        void StartStream()
+        {
+            if (!RosConnection.HasInstance || !RosConnection.Instance.IsConnected)
+            {
+                streamHandle = null;
+                return;
+            }
+
+            try
+            {
+                streamHandle = streamingClient?.PublishFrame(cancellationToken: RosConnection.Instance.CancellationToken);
+            }
+            catch
+            {
+                streamHandle = null;
+            }
         }
 
         void Update()
         {
-            if (RosConnection.Instance.IsConnected
+            if (RosConnection.HasInstance && RosConnection.Instance.IsConnected
                 && Time.timeAsDouble > _lastTime + (1 / UpdateFrequency))
             {
                 _lastTime = Time.timeAsDouble;
@@ -184,6 +260,28 @@ namespace Marus.ROS
 
         protected async void SendMessage()
         {
+            SubscribeToRos();
+
+            if (!RosConnection.HasInstance || !RosConnection.Instance.IsConnected)
+            {
+                return;
+            }
+
+            if (streamHandle == null)
+            {
+                if (Time.timeAsDouble < _lastStreamAttempt + 2.0)
+                {
+                    return;
+                }
+                _lastStreamAttempt = Time.timeAsDouble;
+                StartStream();
+            }
+
+            if (_streamWriter == null)
+            {
+                return;
+            }
+
             var tfOut = new Tf.TfFrame
             {
                 Header = new Header
@@ -197,7 +295,21 @@ namespace Marus.ROS
                 Rotation = _rotation.AsMsg(),
                 Address = address
             };
-            await _streamWriter.WriteAsync(tfOut);
+
+            try
+            {
+                await _streamWriter.WriteAsync(tfOut);
+            }
+            catch (Exception)
+            {
+                // WriteAsync failed. Invalidate streamHandle.
+                // If the server port is closed (container stopped), trigger OnConnectionDropped immediately.
+                streamHandle = null;
+                if (RosConnection.HasInstance && RosConnection.Instance.IsConnected && !RosConnection.Instance.IsServerPortOpen(50))
+                {
+                    RosConnection.Instance.OnConnectionDropped();
+                }
+            }
         }
     }
 }

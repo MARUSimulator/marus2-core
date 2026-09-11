@@ -51,7 +51,7 @@ namespace Marus.Actuators
 
         void Update()
         {
-            _streamer.HandleNewMessages();
+            _streamer?.HandleNewMessages();
         }
 
         void UpdateMovement(ForceResponse result)

@@ -79,7 +79,11 @@ namespace Marus.Networking
         public void StopStream()
         {
             IsStreaming = false;
-            _streamHandle.Dispose();
+            try
+            {
+                _streamHandle?.Dispose();
+            }
+            catch { }
         }
 
         /// <summary>
@@ -131,7 +135,16 @@ namespace Marus.Networking
                 {
                     return;
                 }
+                // If an unexpected streaming exception occurs and port is closed, trigger fast disconnect
+                if (RosConnection.HasInstance && RosConnection.Instance.IsConnected && !RosConnection.Instance.IsServerPortOpen(50))
+                {
+                    RosConnection.Instance.OnConnectionDropped();
+                }
                 UnityEngine.Debug.LogWarning($"ServerStreamer exception: {e.Message}");
+            }
+            finally
+            {
+                IsStreaming = false;
             }
         }
 

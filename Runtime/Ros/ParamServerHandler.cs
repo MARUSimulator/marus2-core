@@ -37,17 +37,43 @@ namespace Marus.Networking
         {
             transform.parent = RosConnection.Instance.transform;
             RosConnection.Instance.OnConnected += OnConnected;
+            RosConnection.Instance.OnDisconnected += OnDisconnected;
         }
 
+        /// <summary>
+        /// Rebinds ParameterServerClient to the newly opened channel on reconnect.
+        /// </summary>
         public void OnConnected(ChannelBase channel)
         {
             _parameterServerClient = new ParameterServerClient(channel);
+        }
+
+        /// <summary>
+        /// Clears client reference on disconnect so TryGetParameter and TrySetParameter
+        /// fail-fast instead of calling through a disposed channel.
+        /// </summary>
+        public void OnDisconnected()
+        {
+            _parameterServerClient = null;
+        }
+
+        void OnDestroy()
+        {
+            if (RosConnection.HasInstance)
+            {
+                RosConnection.Instance.OnConnected -= OnConnected;
+                RosConnection.Instance.OnDisconnected -= OnDisconnected;
+            }
         }
 
         public bool TryGetParameter<T>(string name, out T outValue)
         {
             object value = null;
             outValue = default(T);
+            if (_parameterServerClient == null)
+            {
+                return false;
+            }
             ParamValue paramValue;
             try
             {
@@ -81,6 +107,11 @@ namespace Marus.Networking
 
         public bool TrySetParameter<T>(string name, object value)
         {
+            if (_parameterServerClient == null)
+            {
+                return false;
+            }
+
             var request = new SetParamRequest
             {
                 Name = name,

@@ -90,12 +90,14 @@ namespace Marus
 
         void Update()
         {
+            if (modifyBoatMesh == null) return;
             //Generate the under water and above water meshes
             modifyBoatMesh.GenerateUnderwaterMesh();
         }
 
         void FixedUpdate() 
         {
+            if (modifyBoatMesh == null || boatRB == null) return;
             //Change the center of mass - experimental - move to Start() later
             boatRB.centerOfMass = centerOfMass;
 

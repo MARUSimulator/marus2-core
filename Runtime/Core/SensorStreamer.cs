@@ -66,11 +66,109 @@ namespace Marus.Core
         }
 
         AsyncClientStreamingCall<TMsg, Std.Empty> streamHandle;
+        Func<Grpc.Core.Metadata, System.DateTime?, System.Threading.CancellationToken, AsyncClientStreamingCall<TMsg, Std.Empty>> _streamingFn;
+
+        // Cached MethodInfo of the sensor's streaming method (e.g., StreamImuSensor, StreamGnssSensor).
+        // Used by StartClientStream to dynamically re-bind the delegate to new client instances after reconnect.
+        System.Reflection.MethodInfo _streamingMethod;
+        bool _isSubscribedToRos;
 
         volatile bool _killSendMsgsThread;
         Thread _sendMsgThread;
         ConcurrentQueue<TMsg> _msgQueue;
 
+        /// <summary>
+        /// Starts or restarts the gRPC client-to-server streaming call.
+        /// When ROS reconnects, RosConnection creates a new GrpcChannel and instantiates a new TClient.
+        /// Since C# delegates created in derived Start() methods (e.g. streamingClient.StreamImuSensor) are
+        /// permanently bound to the original client instance on the now-disposed channel, we check whether
+        /// the delegate's target matches the current client instance. If not, Delegate.CreateDelegate re-binds
+        /// the method to the new client instance on the active channel.
+        /// </summary>
+        private AsyncClientStreamingCall<TMsg, Std.Empty> StartClientStream()
+        {
+            if (_streamingMethod == null || !RosConnection.HasInstance || !RosConnection.Instance.IsConnected)
+                return null;
+
+            try
+            {
+                var client = streamingClient;
+                if (client == null) return null;
+
+                // If the client instance changed after reconnection, re-bind delegate to the new client
+                if (_streamingFn == null || !object.ReferenceEquals(_streamingFn.Target, client))
+                {
+                    var method = _streamingMethod;
+                    if (method.DeclaringType != null && !method.DeclaringType.IsAssignableFrom(client.GetType()))
+                    {
+                        var m = client.GetType().GetMethod(method.Name, new[] {
+                            typeof(Grpc.Core.Metadata),
+                            typeof(System.DateTime?),
+                            typeof(System.Threading.CancellationToken)
+                        });
+                        if (m != null) method = m;
+                    }
+
+                    _streamingFn = (Func<Grpc.Core.Metadata, System.DateTime?, System.Threading.CancellationToken, AsyncClientStreamingCall<TMsg, Std.Empty>>)
+                        Delegate.CreateDelegate(
+                            typeof(Func<Grpc.Core.Metadata, System.DateTime?, System.Threading.CancellationToken, AsyncClientStreamingCall<TMsg, Std.Empty>>),
+                            client,
+                            method
+                        );
+                }
+
+                return _streamingFn(null, null, RosConnection.Instance.CancellationToken);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        private void SubscribeToRos()
+        {
+            if (_isSubscribedToRos) return;
+            if (RosConnection.HasInstance)
+            {
+                RosConnection.Instance.OnConnected += HandleConnected;
+                RosConnection.Instance.OnDisconnected += HandleDisconnected;
+                _isSubscribedToRos = true;
+            }
+        }
+
+        private void UnsubscribeFromRos()
+        {
+            if (!_isSubscribedToRos) return;
+            if (RosConnection.HasInstance)
+            {
+                RosConnection.Instance.OnConnected -= HandleConnected;
+                RosConnection.Instance.OnDisconnected -= HandleDisconnected;
+            }
+            _isSubscribedToRos = false;
+        }
+
+        /// <summary>
+        /// On reconnection, nullify streamHandle and sync timer so SendMessagesThread starts
+        /// a fresh stream on the new GrpcChannel without delay.
+        /// </summary>
+        private void HandleConnected(Grpc.Core.ChannelBase channel)
+        {
+            streamHandle = null;
+            _prevMsgTime = Time.fixedTimeAsDouble;
+        }
+
+        /// <summary>
+        /// On disconnection, clear streamHandle and purge any backlog in _msgQueue so old,
+        /// stale sensor frames from before the disconnect are not sent upon reconnect.
+        /// </summary>
+        private void HandleDisconnected()
+        {
+            streamHandle = null;
+            if (_msgQueue != null)
+            {
+                while (_msgQueue.TryDequeue(out _)) { }
+            }
+        }
 
         /// <summary>
         /// Used to write sensor reading messages
@@ -132,12 +230,32 @@ namespace Marus.Core
         {
             SetUpdateFrequency(UpdateFrequency);
             SetAddresSufix(_sensor.name);
-            if (_sendMsgThread == null)
+            SubscribeToRos();
+            if (_msgQueue == null)
             {
                 _msgQueue = new ConcurrentQueue<TMsg>();
-                _sendMsgThread = new Thread(SendMessagesThread) { IsBackground = false };
-                _sendMsgThread.Priority = System.Threading.ThreadPriority.Highest;
+            }
+            if (_sendMsgThread == null)
+            {
                 _killSendMsgsThread = false;
+                _sendMsgThread = new Thread(SendMessagesThread) { IsBackground = true };
+                _sendMsgThread.Priority = System.Threading.ThreadPriority.Highest;
+                _sendMsgThread.Start();
+            }
+        }
+
+        private void OnEnable()
+        {
+            SubscribeToRos();
+            if (_sendMsgThread == null && _sensor != null)
+            {
+                if (_msgQueue == null)
+                {
+                    _msgQueue = new ConcurrentQueue<TMsg>();
+                }
+                _killSendMsgsThread = false;
+                _sendMsgThread = new Thread(SendMessagesThread) { IsBackground = true };
+                _sendMsgThread.Priority = System.Threading.ThreadPriority.Highest;
                 _sendMsgThread.Start();
             }
         }
@@ -180,12 +298,22 @@ namespace Marus.Core
         /// </summary>
         void SendMessage()
         {
+            SubscribeToRos();
+
             // if not connected, do not send
-            if (!RosConnection.Instance.IsConnected)
+            if (!RosConnection.HasInstance || !RosConnection.Instance.IsConnected)
                 return;
 
             var dt = 1.0f / UpdateFrequency;
             var time = Time.fixedTimeAsDouble;
+
+            // If disconnected or lagging for longer than 2 intervals, reset timer to current time.
+            // This prevents bursting a backlog of messages when connection is restored.
+            if (time - _prevMsgTime > 2.0 * dt)
+            {
+                _prevMsgTime = time;
+            }
+
             // calculate when msg has to be sent,
             // and send when enough time passes
             var nextMsgTime = _prevMsgTime + dt;
@@ -203,6 +331,10 @@ namespace Marus.Core
             }
         }
 
+        /// <summary>
+        /// Background worker thread dedicated to writing sensor messages to the gRPC stream.
+        /// Handles reconnection asynchronously without blocking the Unity main rendering thread.
+        /// </summary>
         private async void SendMessagesThread()
         {
             int count = 0;
@@ -215,10 +347,55 @@ namespace Marus.Core
                     return;
                 }
 
+                if (!RosConnection.HasInstance || !RosConnection.Instance.IsConnected)
+                {
+                    streamHandle = null;
+                    Thread.Sleep(100);
+                    continue;
+                }
+
+                // Dynamically establish/rebind client stream if not yet active
+                if (streamHandle == null && _streamingMethod != null)
+                {
+                    try
+                    {
+                        streamHandle = StartClientStream();
+                    }
+                    catch
+                    {
+                        streamHandle = null;
+                    }
+
+                    if (streamHandle == null)
+                    {
+                        Thread.Sleep(200);
+                        continue;
+                    }
+                }
+
                 while (_msgQueue.TryDequeue(out var msg))
                 {
-                    await _streamWriter.WriteAsync(msg);
-                    count++;
+                    if (_streamWriter == null)
+                    {
+                        break;
+                    }
+
+                    try
+                    {
+                        await _streamWriter.WriteAsync(msg);
+                        count++;
+                    }
+                    catch (Exception)
+                    {
+                        // WriteAsync failed. Invalidate stream handle.
+                        // If the server port is closed (container stopped), trigger OnConnectionDropped immediately.
+                        streamHandle = null;
+                        if (RosConnection.HasInstance && RosConnection.Instance.IsConnected && !RosConnection.Instance.IsServerPortOpen(50))
+                        {
+                            RosConnection.Instance.OnConnectionDropped();
+                        }
+                        break;
+                    }
                 }
                 var dt = 1000.0 / UpdateFrequency; // in ms
                 var sleepTime = dt - sw.ElapsedMilliseconds;
@@ -246,15 +423,31 @@ namespace Marus.Core
             // AsyncClientStreamingCall<TMsg, Std.Empty> streamingCall
             Func<Grpc.Core.Metadata, System.DateTime?, System.Threading.CancellationToken, AsyncClientStreamingCall<TMsg, Std.Empty>> streamingFn)
         {
-            streamHandle = streamingFn(null, null, RosConnection.Instance.CancellationToken);
             _sensor = sensor;
+            _streamingFn = streamingFn;
+            _streamingMethod = streamingFn?.Method;
+            if (RosConnection.HasInstance && RosConnection.Instance.IsConnected)
+            {
+                streamHandle = StartClientStream();
+            }
         }
 
         private void OnDisable()
         {
+            UnsubscribeFromRos();
             _killSendMsgsThread = true;
             _sendMsgThread?.Join(500);
             _sendMsgThread = null;
+            streamHandle = null;
+        }
+
+        private void OnDestroy()
+        {
+            UnsubscribeFromRos();
+            _killSendMsgsThread = true;
+            _sendMsgThread?.Join(500);
+            _sendMsgThread = null;
+            streamHandle = null;
         }
 
         protected abstract TMsg ComposeMessage();

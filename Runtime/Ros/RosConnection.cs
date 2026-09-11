@@ -18,6 +18,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading;
+using System.Threading.Tasks;
 using Grpc.Core;
 using Grpc.Net.Client;
 using UnityEngine;
@@ -86,6 +87,14 @@ namespace Marus.Networking
         private SimulationControlClient _simulationController;
 
         public event Action<ChannelBase> OnConnected;
+        public event Action OnDisconnected;
+        private volatile bool _fireConnected;
+        private volatile bool _fireDisconnected;
+        private Task _heartbeatTask;
+        private readonly object _connectionLock = new object();
+
+        [Header("Reconnection")]
+        public float reconnectInterval = 2.0f;
 
         /// <summary>
         /// Optional custom HttpMessageHandler factory (e.g. for testing with mock handlers)
@@ -126,6 +135,11 @@ namespace Marus.Networking
         /// </summary>
         public T GetClient<T>() where T : ClientBase
         {
+            if (_streamingChannel == null)
+            {
+                InitChannel();
+            }
+
             if (_grpcClients.TryGetValue(typeof(T), out var client))
                 return client as T;
 
@@ -146,29 +160,46 @@ namespace Marus.Networking
             // Enable HTTP/2 cleartext (h2c) support for standard SocketsHttpHandler/HttpClientHandler fallback
             AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
-            var address = serverIP.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || serverIP.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
-                ? $"{serverIP}:{serverPort}"
-                : $"http://{serverIP}:{serverPort}";
-
-            var httpHandler = CreateHttpMessageHandler();
-            var options = new GrpcChannelOptions
-            {
-                HttpHandler = httpHandler,
-                MaxSendMessageSize = 1024 * 1024 * 100,
-                MaxReceiveMessageSize = 1024 * 1024 * 100,
-                DisposeHttpClient = true
-            };
-
-            _streamingChannel = GrpcChannel.ForAddress(address, options);
             _cancellationTokenSource = new CancellationTokenSource();
             _cancellationToken = _cancellationTokenSource.Token;
 
-            _grpcClients.Clear();
+            InitChannel();
 
             CreateSingletons();
-            Connect();
+            StartCoroutine(ConnectionLifecycleLoop());
+        }
 
-            StartCoroutine(WhileConnectionAwait());
+        public void InitChannel()
+        {
+            lock (_clientsLock)
+            {
+                if (_streamingChannel != null)
+                {
+                    try
+                    {
+                        _streamingChannel.Dispose();
+                    }
+                    catch { }
+                    _streamingChannel = null;
+                }
+
+                _grpcClients.Clear();
+
+                var address = serverIP.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || serverIP.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                    ? $"{serverIP}:{serverPort}"
+                    : $"http://{serverIP}:{serverPort}";
+
+                var httpHandler = CreateHttpMessageHandler();
+                var options = new GrpcChannelOptions
+                {
+                    HttpHandler = httpHandler,
+                    MaxSendMessageSize = 1024 * 1024 * 100,
+                    MaxReceiveMessageSize = 1024 * 1024 * 100,
+                    DisposeHttpClient = true
+                };
+
+                _streamingChannel = GrpcChannel.ForAddress(address, options);
+            }
         }
 
         /// <summary>
@@ -215,29 +246,42 @@ namespace Marus.Networking
 
         public void Connect()
         {
-            if (!_connected && !_isConnecting)
+            if (_connected || _isConnecting)
             {
-                _isConnecting = true;
-                _connectThread = new Thread(() =>
-                {
-                    try
-                    {
-                        _connected = TryConnect();
-                    }
-                    catch (ThreadAbortException)
-                    {
-                        // Domain reload or thread abort - exit gracefully
-                    }
-                    finally
-                    {
-                        _isConnecting = false;
-                    }
-                })
-                {
-                    IsBackground = true
-                };
-                _connectThread.Start();
+                return;
             }
+
+            _isConnecting = true;
+            Debug.Log($"Awaiting connection with ROS Server ({serverIP}:{serverPort})...");
+
+            _connectThread = new Thread(() =>
+            {
+                try
+                {
+                    var connected = TryConnect();
+                    if (connected)
+                    {
+                        _connected = true;
+                        _fireConnected = true;
+                    }
+                }
+                catch (ThreadAbortException)
+                {
+                    // Domain reload or thread abort - exit gracefully
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"Exception during TryConnect: {ex.Message}");
+                }
+                finally
+                {
+                    _isConnecting = false;
+                }
+            })
+            {
+                IsBackground = true
+            };
+            _connectThread.Start();
         }
 
         void CreateSingletons()
@@ -250,17 +294,48 @@ namespace Marus.Networking
             var timeHandler = TimeHandler.Instance;
         }
 
-        IEnumerator WhileConnectionAwait()
+        /// <summary>
+        /// Connection lifecycle coroutine.
+        /// Continually ensures the connection state stays synchronized. If disconnected, waits for
+        /// reconnectInterval cooldown before initiating the next connection attempt in a background thread.
+        /// </summary>
+        IEnumerator ConnectionLifecycleLoop()
         {
+            // Initial attempt on startup
+            if (!_connected && !_isConnecting)
+            {
+                Connect();
+            }
+
             while (true)
             {
-                if (_connected)
+                float connectStartTime = Time.realtimeSinceStartup;
+                while (_isConnecting && (Time.realtimeSinceStartup - connectStartTime) < (connectionTimeout + 1.0f))
                 {
-                    OnRosConnected();
-                    OnConnected?.Invoke(_streamingChannel);
-                    break;
+                    yield return null;
                 }
-                yield return null;
+
+                if (_isConnecting)
+                {
+                    Debug.LogWarning("Connection attempt timed out. Resetting connecting state.");
+                    _isConnecting = false;
+                    try { _connectThread?.Abort(); } catch { }
+                }
+
+                if (!_connected)
+                {
+                    // Enforce cooldown before attempting reconnect to prevent CPU spin and socket thrashing
+                    yield return new WaitForSecondsRealtime(reconnectInterval);
+
+                    if (!_connected && !_isConnecting)
+                    {
+                        Connect();
+                    }
+                }
+                else
+                {
+                    yield return new WaitForSecondsRealtime(1.0f);
+                }
             }
         }
 
@@ -270,10 +345,121 @@ namespace Marus.Networking
             {
                 GetSimulationController();
             }
+            StartHeartbeat();
+        }
+
+        void StartHeartbeat()
+        {
+            if (_heartbeatTask == null || _heartbeatTask.IsCompleted)
+            {
+                _heartbeatTask = HeartbeatLoop(_cancellationToken);
+            }
+        }
+
+        /// <summary>
+        /// Background heartbeat task.
+        /// Probes the server port via IsServerPortOpen(100) every second.
+        /// This detects container shutdown or port closure in &lt; 0.1ms without issuing an HTTP/2 gRPC call
+        /// that could block or throw curl broken pipe errors in UnityHttpMessageHandler.
+        /// </summary>
+        async Task HeartbeatLoop(CancellationToken cancellationToken)
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(1000, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                if (_connected && !cancellationToken.IsCancellationRequested)
+                {
+                    if (!IsServerPortOpen(100))
+                    {
+                        if (_connected && !cancellationToken.IsCancellationRequested)
+                        {
+                            OnConnectionDropped();
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Called when connection to ROS server is lost, severed, or container is stopped.
+        /// 1. Marks state as disconnected and flags OnDisconnected event to be fired on main thread.
+        /// 2. Cancels active streams via CancellationTokenSource so streaming writers fail-fast.
+        /// 3. Cleans up old GrpcChannel and clears cached client instances so fresh ones are bound upon reconnect.
+        /// </summary>
+        public void OnConnectionDropped()
+        {
+            lock (_connectionLock)
+            {
+                if (!_connected)
+                {
+                    return;
+                }
+
+                _connected = false;
+                Debug.Log("Disconnected from ROS server");
+                _fireDisconnected = true;
+
+                // Cancel active streams so callers abort promptly instead of writing to closed socket
+                try
+                {
+                    _cancellationTokenSource?.Cancel();
+                    _cancellationTokenSource?.Dispose();
+                }
+                catch { }
+                _cancellationTokenSource = new CancellationTokenSource();
+                _cancellationToken = _cancellationTokenSource.Token;
+
+                // Reset channel so broken HTTP/2 connection is discarded
+                lock (_clientsLock)
+                {
+                    try
+                    {
+                        _streamingChannel?.Dispose();
+                    }
+                    catch { }
+                    _streamingChannel = null;
+                    _grpcClients.Clear();
+                }
+            }
         }
 
         void Update()
         {
+            if (_fireConnected)
+            {
+                _fireConnected = false;
+                OnRosConnected();
+                try
+                {
+                    OnConnected?.Invoke(_streamingChannel);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"Exception in OnConnected subscriber: {ex.Message}");
+                }
+            }
+
+            if (_fireDisconnected)
+            {
+                _fireDisconnected = false;
+                try
+                {
+                    OnDisconnected?.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"Exception in OnDisconnected subscriber: {ex.Message}");
+                }
+            }
+
             if (!RealtimeSimulation && IsConnected)
             {
                 StartCoroutine(RosStep());
@@ -308,24 +494,132 @@ namespace Marus.Networking
             );
         }
 
+        private string GetCleanHost()
+        {
+            var host = serverIP;
+            if (string.IsNullOrEmpty(host))
+                return "127.0.0.1";
+
+            if (host.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+                host = host.Substring(7);
+            else if (host.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                host = host.Substring(8);
+
+            var slashIndex = host.IndexOf('/');
+            if (slashIndex >= 0)
+                host = host.Substring(0, slashIndex);
+
+            var colonIndex = host.IndexOf(':');
+            if (colonIndex >= 0)
+                host = host.Substring(0, colonIndex);
+
+            return string.IsNullOrEmpty(host) ? "127.0.0.1" : host;
+        }
+
         /// <summary>
-        /// Ping gRPC service to see if connection if established.
+        /// Rapid non-blocking TCP socket check to verify whether the target port is open.
+        /// When Unity connects before the server starts or while the container is down, calling gRPC Ping directly
+        /// causes UnityHttpMessageHandler (built on libcurl) to throw verbose broken pipe / curl errors and
+        /// potentially block threads. This socket check finishes in &lt; 0.1ms on localhost, cleanly failing fast.
+        /// Works cross-platform on Linux (POSIX), Windows (Winsock), and macOS.
+        /// </summary>
+        public bool IsServerPortOpen(int timeoutMs = 200)
+        {
+            try
+            {
+                var host = GetCleanHost();
+                System.Net.IPAddress ip;
+                if (string.IsNullOrEmpty(host) || host == "localhost" || host == "127.0.0.1")
+                {
+                    ip = System.Net.IPAddress.Loopback;
+                }
+                else if (!System.Net.IPAddress.TryParse(host, out ip))
+                {
+                    var addresses = System.Net.Dns.GetHostAddresses(host);
+                    if (addresses == null || addresses.Length == 0) return false;
+                    ip = addresses[0];
+                }
+
+                using (var socket = new System.Net.Sockets.Socket(ip.AddressFamily, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp))
+                {
+                    socket.Blocking = false;
+                    try
+                    {
+                        socket.Connect(new System.Net.IPEndPoint(ip, serverPort));
+                        return true;
+                    }
+                    catch (System.Net.Sockets.SocketException ex)
+                    {
+                        if (ex.SocketErrorCode == System.Net.Sockets.SocketError.WouldBlock ||
+                            ex.SocketErrorCode == System.Net.Sockets.SocketError.InProgress)
+                        {
+                            bool canWrite = socket.Poll(timeoutMs * 1000, System.Net.Sockets.SelectMode.SelectWrite);
+                            if (!canWrite) return false;
+
+                            int error = (int)socket.GetSocketOption(System.Net.Sockets.SocketOptionLevel.Socket, System.Net.Sockets.SocketOptionName.Error);
+                            return error == 0;
+                        }
+                        return false;
+                    }
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Handshake procedure to establish and verify connection with ROS Server:
+        /// 1. Verifies TCP port is open (fails in &lt; 1ms if server is down, avoiding curl errors).
+        /// 2. Ensures GrpcChannel and PingClient are ready on the active channel.
+        /// 3. Sends gRPC Ping and verifies response == 1.
+        /// 4. Pauses 150ms to verify server stability and ensure it is not mid-shutdown before declaring connected.
         /// </summary>
         bool TryConnect()
         {
-            Debug.Log("Awaiting connection with ROS Server...");
+            // First verify that the TCP port is open.
+            // If the server is not running, this returns false in < 1ms on localhost,
+            // avoiding any deadlock or curl errors in UnityHttpMessageHandler.
+            if (!IsServerPortOpen(200))
+            {
+                return false;
+            }
+
+            if (_streamingChannel == null)
+            {
+                InitChannel();
+            }
+
             var pingClient = GetClient<PingClient>();
             if (pingClient == null)
             {
                 return false;
             }
+
             try
             {
-                var response = pingClient.Ping(new PingMsg(), deadline: DateTime.UtcNow.AddSeconds(connectionTimeout), cancellationToken: _cancellationToken);
-                if (response.Value == 1)
+                var timeout = Math.Min(connectionTimeout, 2);
+                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeout)))
+                using (var linked = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, _cancellationToken))
                 {
-                    Debug.Log("Connected to the ROS Server");
-                    return true;
+                    var response = pingClient.Ping(
+                        new PingMsg(), 
+                        deadline: DateTime.UtcNow.AddSeconds(timeout), 
+                        cancellationToken: linked.Token
+                    );
+                    if (response != null && response.Value == 1)
+                    {
+                        // Verify stability: pause briefly to ensure server is steady and not in mid-shutdown
+                        Thread.Sleep(150);
+                        if (!IsServerPortOpen(100))
+                        {
+                            return false;
+                        }
+
+                        Debug.Log("Connected to the ROS Server");
+                        return true;
+                    }
                 }
             }
             catch (ThreadAbortException)
@@ -336,28 +630,20 @@ namespace Marus.Networking
             {
                 return false;
             }
-            catch (RpcException e)
+            catch (RpcException)
             {
-                if (e.StatusCode == StatusCode.Cancelled)
-                {
-                    return false;
-                }
-                Debug.Log($"Could not establish a connection to ROS Server. {e.Message}");
+                return false;
             }
-            catch (Exception e)
+            catch (Exception)
             {
-                if (e is ThreadAbortException || e is OperationCanceledException)
-                {
-                    return false;
-                }
-                Debug.Log($"Could not establish a connection to ROS Server. {e.Message}");
+                return false;
             }
             return false;
         }
 
         void OnDisable()
         {
-            if (_streamingChannel == null)
+            if (_streamingChannel == null && !_connected)
             {
                 return;
             }
@@ -382,22 +668,25 @@ namespace Marus.Networking
                 _connectThread = null;
             }
 
-            try
+            lock (_clientsLock)
             {
-                _streamingChannel?.Dispose();
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"Exception during GrpcChannel dispose: {ex.Message}");
-            }
-            finally
-            {
-                _grpcClients.Clear();
-                _streamingChannel = null;
-                _cancellationTokenSource?.Dispose();
-                _cancellationTokenSource = null;
-                _connected = false;
-                _isConnecting = false;
+                try
+                {
+                    _streamingChannel?.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"Exception during GrpcChannel dispose: {ex.Message}");
+                }
+                finally
+                {
+                    _grpcClients.Clear();
+                    _streamingChannel = null;
+                    _cancellationTokenSource?.Dispose();
+                    _cancellationTokenSource = null;
+                    _connected = false;
+                    _isConnecting = false;
+                }
             }
             Debug.Log("Shut down of grpc channel successful.");
         }

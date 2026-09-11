@@ -94,7 +94,7 @@ namespace Marus.Networking
         void Update()
         {
             var rosConn = RosConnection.Instance;
-            if (StreamFrames)
+            if (StreamFrames && rosConn != null && rosConn.IsConnected)
             {
                 if (!_serverStreamer.IsStreaming)
                 {
