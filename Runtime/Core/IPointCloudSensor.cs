@@ -24,7 +24,7 @@ namespace Marus.Core
     /// </summary>
     public interface IPointCloudSensor
     {
-        event Action<GameObject, string, int, Material, ComputeShader> OnPointCloudInitialized;
+        event Action<GameObject, string, int> OnPointCloudInitialized;
         event Action<NativeArray<Vector3>> OnPointCloudUpdated;
     }
 }
