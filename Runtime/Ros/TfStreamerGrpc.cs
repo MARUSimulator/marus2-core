@@ -1,11 +1,11 @@
 // Copyright 2021 Laboratory for Underwater Systems and Technologies (LABUST)
-// 
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -23,12 +23,12 @@ using Marus.Utils;
 using Marus.CustomInspector;
 using System.Threading.Tasks;
 
-namespace Marus.ROS
+namespace Marus.Networking
 {
     /// <summary>
-    /// Publish TF ROS messages
+    /// Publish TF messages over gRPC
     /// </summary>
-    public class TfStreamerROS : MonoBehaviour
+    public class TfStreamerGrpc : MonoBehaviour
     {
         public float UpdateFrequency = 1;
         /// <summary>
@@ -66,7 +66,7 @@ namespace Marus.ROS
                 _vehicle = Helpers.GetVehicle(transform);
                 if (_vehicle == null)
                 {
-                    Debug.Log($@"Cannot get vehicle from sensor {transform.name}. 
+                    Debug.Log($@"Cannot get vehicle from sensor {transform.name}.
                         Using sensor as the vehicle transform");
                     return transform;
                 }
@@ -140,7 +140,7 @@ namespace Marus.ROS
         private bool _isSubscribedToRos;
 
         /// <summary>
-        /// Ensures TfStreamerROS is cleanly subscribed to RosConnection events,
+        /// Ensures TfStreamerGrpc is cleanly subscribed to RosConnection events,
         /// even if GameObjects initialize in non-deterministic order or dynamically at runtime.
         /// </summary>
         private void SubscribeToRos()

@@ -18,8 +18,9 @@ using System.Collections.Generic;
 using Marus.Core;
 using Unity.Collections;
 using Unity.Jobs;
+using Unity.Burst;
 using UnityEngine;
-#if UNITY_6000_5_OR_NEWER
+#if UNITY_6000_5 || UNITY_6000_5_OR_NEWER
 using ObjectId = UnityEngine.EntityId;
 #else
 using ObjectId = System.Int32;
@@ -211,8 +212,9 @@ namespace Marus.Core
 
     public class RaycastJobHelper<T> : RaycastJobHelper where T: struct
     {
+        private const int DefaultBatchSize = 128;
+
         NativeArray<Vector3> _directionsLocal;
-        NativeArray<Vector3> _directionsGlobal;
         NativeArray<RaycastCommand> _commands;
         NativeArray<RaycastHit> _hits;
         NativeArray<Vector3> _points;
@@ -232,17 +234,16 @@ namespace Marus.Core
         Action<NativeArray<Vector3>, NativeArray<T>> _onFinishCallback;
         static Dictionary<ObjectId, Func<RaycastHit, Vector3, int, T>> _getResultFromHit;
 
+        private readonly WaitForEndOfFrame _waitForEndOfFrame = new WaitForEndOfFrame();
 
         public RaycastJobHelper(GameObject obj, NativeArray<Vector3> directions,
                 Func<RaycastHit, Vector3, int, T> getResultFromHit,
                 Action<NativeArray<Vector3>, NativeArray<T>> onFinish,
                 float maxDistance=float.MaxValue, float minDistance=0, float sampleFrequency = 10)
-
         {
             var totalRays = directions.Length;
             _obj = obj;
             _directionsLocal = directions;
-            _directionsGlobal = new NativeArray<Vector3>(totalRays, Allocator.Persistent);
             _hasData = false;
             _commands = new NativeArray<RaycastCommand>(totalRays, Allocator.Persistent);
             _hits = new NativeArray<RaycastHit>(totalRays, Allocator.Persistent);
@@ -254,7 +255,6 @@ namespace Marus.Core
             _timeSinceLastSample = float.PositiveInfinity;
             InitializeGetResultFromHit(getResultFromHit);
             _onFinishCallback = onFinish;
-
         }
 
         private void InitializeGetResultFromHit(Func<RaycastHit, Vector3, int, T> getResultFromHit)
@@ -263,11 +263,40 @@ namespace Marus.Core
             {
                 _getResultFromHit = new Dictionary<ObjectId, Func<RaycastHit, Vector3, int, T>>();
             }
-#if UNITY_6000_5_OR_NEWER
-            _getResultFromHit.Add(_obj.GetEntityId(), getResultFromHit);
+#if UNITY_6000_5 || UNITY_6000_5_OR_NEWER
+            _getResultFromHit[_obj.GetEntityId()] = getResultFromHit;
 #else
-            _getResultFromHit.Add(_obj.GetInstanceID(), getResultFromHit);
+            _getResultFromHit[_obj.GetInstanceID()] = getResultFromHit;
 #endif
+        }
+
+        /// <summary>
+        /// Swaps internal completion buffers with external buffers for zero-copy double-buffering.
+        /// Call this in onFinishCallback to atomically receive the completed data without memory copying.
+        /// </summary>
+        public void SwapBuffers(ref NativeArray<Vector3> externalPoints, ref NativeArray<T> externalResults)
+        {
+            var tempPoints = _points;
+            _points = externalPoints;
+            externalPoints = tempPoints;
+
+            var tempResults = _results;
+            _results = externalResults;
+            externalResults = tempResults;
+        }
+
+        public void SwapPoints(ref NativeArray<Vector3> externalPoints)
+        {
+            var tempPoints = _points;
+            _points = externalPoints;
+            externalPoints = tempPoints;
+        }
+
+        public void SwapResults(ref NativeArray<T> externalResults)
+        {
+            var tempResults = _results;
+            _results = externalResults;
+            externalResults = tempResults;
         }
 
         public void RaycastSync()
@@ -279,13 +308,9 @@ namespace Marus.Core
                 _readbackInProgress = true;
             }
             _readbackHandle.Complete();
-            if (_readbackHandle.IsCompleted)
-            {
-                _readbackHandle.Complete();
-                _readbackInProgress = false;
-                _onFinishCallback(_points, _results);
-                _hasData = true;
-            }
+            _readbackInProgress = false;
+            _onFinishCallback(_points, _results);
+            _hasData = true;
         }
 
         public IEnumerator RaycastInLoop()
@@ -295,7 +320,7 @@ namespace Marus.Core
                 _timeSinceLastSample += Time.deltaTime;
                 if (_raycastHandle.IsCompleted && !_readbackInProgress)
                 {
-                    if(enoughTimePassed())
+                    if (enoughTimePassed())
                     {
                         _raycastHandle = ScheduleNewRaycastJob();
                         _readbackHandle = ReadbackData();
@@ -307,7 +332,7 @@ namespace Marus.Core
                         _readbackInProgress = false;
                     }
                 }
-                yield return new WaitForEndOfFrame();
+                yield return _waitForEndOfFrame;
 
                 if (_readbackInProgress && _readbackHandle.IsCompleted)
                 {
@@ -323,7 +348,7 @@ namespace Marus.Core
 
         private bool enoughTimePassed()
         {
-            return _timeSinceLastSample >= 1/SampleFrequency;
+            return _timeSinceLastSample >= 1 / SampleFrequency;
         }
 
         public void Dispose()
@@ -332,48 +357,51 @@ namespace Marus.Core
             _readbackHandle.Complete();
 
             // dispose allocated buffers
-            _commands.Dispose();
-            _hits.Dispose();
-            _directionsLocal.Dispose();
-            _directionsGlobal.Dispose();
-            _results.Dispose();
-            _points.Dispose();
+            if (_commands.IsCreated) _commands.Dispose();
+            if (_hits.IsCreated) _hits.Dispose();
+            if (_directionsLocal.IsCreated) _directionsLocal.Dispose();
+            if (_results.IsCreated) _results.Dispose();
+            if (_points.IsCreated) _points.Dispose();
         }
 
         private JobHandle ReadbackData()
         {
             var transform = _obj.transform;
 
-            var readback = new ReadbackDataJob();
-            readback.hits = _hits;
-            readback.results = _results;
-            readback.points = _points;
-            readback.directions = _directionsLocal;
-            readback.position = transform.position;
-            readback.rotation = transform.rotation;
-#if UNITY_6000_5_OR_NEWER
-            readback.objectId = _obj.GetEntityId();
+            var readback = new ReadbackDataJob
+            {
+                hits = _hits,
+                results = _results,
+                points = _points,
+                directions = _directionsLocal,
+                position = transform.position,
+                rotation = transform.rotation,
+                invRotation = Quaternion.Inverse(transform.rotation),
+#if UNITY_6000_5 || UNITY_6000_5_OR_NEWER
+                objectId = _obj.GetEntityId(),
 #else
-            readback.objectId = _obj.GetInstanceID();
+                objectId = _obj.GetInstanceID(),
 #endif
-            readback.minDistance = _minDistance;
-            return readback.Schedule(_hits.Length, 10, _raycastHandle);
+                minDistance = _minDistance
+            };
+            return readback.Schedule(_hits.Length, DefaultBatchSize, _raycastHandle);
         }
 
         private JobHandle ScheduleNewRaycastJob()
         {
             var transform = _obj.transform;
 
+            var commandsJob = new CreateRaycastCommandsJob
+            {
+                commands = _commands,
+                maxDistance = _maxDistance,
+                directions = _directionsLocal,
+                position = transform.position,
+                rotation = transform.rotation
+            };
+            var commandsJobHandle = commandsJob.Schedule(_directionsLocal.Length, DefaultBatchSize);
 
-            var commandsJob = new CreateRaycastCommandsJob();
-            commandsJob.commands = _commands;
-            commandsJob.maxDistance = _maxDistance;
-            commandsJob.directions = _directionsLocal;
-            commandsJob.position = transform.position;
-            commandsJob.rotation = transform.rotation;
-            var commandsJobHandle = commandsJob.Schedule(_directionsLocal.Length, 10);
-
-            return RaycastCommand.ScheduleBatch(_commands, _hits, 10, commandsJobHandle);
+            return RaycastCommand.ScheduleBatch(_commands, _hits, DefaultBatchSize, commandsJobHandle);
         }
 
         // Job cannot have reference type fields, so it calls one global static method to get result
@@ -383,10 +411,12 @@ namespace Marus.Core
             return _getResultFromHit[objId](hit, direction, index);
         }
 
+        [BurstCompile]
         public struct CreateRaycastCommandsJob : IJobParallelFor
         {
             [ReadOnly]
             public Vector3 position;
+            [ReadOnly]
             public Quaternion rotation;
 
             [ReadOnly]
@@ -395,25 +425,28 @@ namespace Marus.Core
             [ReadOnly]
             public float maxDistance;
 
+            [WriteOnly]
             public NativeArray<RaycastCommand> commands;
 
             public void Execute(int i)
             {
-                commands[i] = new RaycastCommand(position, rotation*directions[i], maxDistance);
+                commands[i] = new RaycastCommand(position, rotation * directions[i], maxDistance);
             }
         }
 
         public struct ReadbackDataJob : IJobParallelFor
         {
-
             [ReadOnly]
             public NativeArray<RaycastHit> hits;
+            [ReadOnly]
             public NativeArray<Vector3> directions;
             public NativeArray<T> results;
             public NativeArray<Vector3> points;
             public ObjectId objectId;
             public Vector3 position;
             public Quaternion rotation;
+            [ReadOnly]
+            public Quaternion invRotation;
             public float minDistance;
 
             public void Execute(int i)
@@ -422,19 +455,19 @@ namespace Marus.Core
                 {
                     points[i] = Vector3.zero;
                     var h = new RaycastHit();
-                    h.point = Quaternion.Inverse(rotation)*(Vector3.zero - position);
+                    h.point = invRotation * (Vector3.zero - position);
                     results[i] = GetResultFromHit(objectId, h, directions[i], i);
                 }
                 else
                 {
                     results[i] = GetResultFromHit(objectId, hits[i], directions[i], i);
-                    if(results[i] is LidarReading r && !r.IsValid)
+                    if (results[i] is LidarReading r && !r.IsValid)
                     {
                         points[i] = Vector3.zero;
                     }
                     else
                     {
-                        points[i] = Quaternion.Inverse(rotation)*(hits[i].point - position);
+                        points[i] = invRotation * (hits[i].point - position);
                     }
                 }
             }

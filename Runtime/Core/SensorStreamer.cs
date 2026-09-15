@@ -20,7 +20,6 @@ using System;
 using Marus.Networking;
 using Marus.Logger;
 using Marus.Utils;
-using Marus.ROS;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
 using System.Threading;
@@ -202,9 +201,9 @@ namespace Marus.Core
         #if UNITY_EDITOR
         protected void Reset()
         {
-            if(gameObject.GetComponent<TfStreamerROS>() == null)
+            if(gameObject.GetComponent<TfStreamerGrpc>() == null)
             {
-                gameObject.AddComponent<TfStreamerROS>();
+                gameObject.AddComponent<TfStreamerGrpc>();
             }
             UpdateVehicle();
         }
@@ -321,11 +320,10 @@ namespace Marus.Core
             {
                 var msg = ComposeMessage();
                 _prevMsgTime = nextMsgTime;
-                if (_msgQueue.Count == MessageQueueSize)
+                if (msg == null) return;
+                while (_msgQueue.Count >= MessageQueueSize)
                 {
-                    // remove first element
                     _msgQueue.TryDequeue(out _);
-                    Debug.Log($"Grpc Message overflow in {_sensor.name}");
                 }
                 _msgQueue.Enqueue(msg);
             }

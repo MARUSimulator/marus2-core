@@ -102,10 +102,20 @@ namespace Marus.Utils
                             DontDestroyOnLoad(instance.gameObject);
                         }
                     }
-                    var init = typeof(T).GetMethod("Initialize", BindingFlags.NonPublic | BindingFlags.Instance);
-                    init?.Invoke(instance, null);
+                    (instance as Singleton<T>)?.EnsureInitialized();
                 }
                 return instance;
+            }
+        }
+
+        protected bool _isInitialized;
+
+        protected void EnsureInitialized()
+        {
+            if (!_isInitialized)
+            {
+                _isInitialized = true;
+                Initialize();
             }
         }
 
@@ -118,6 +128,7 @@ namespace Marus.Utils
                 {
                     DontDestroyOnLoad(gameObject);
                 }
+                EnsureInitialized();
             }
             else if (instance != this)
             {

@@ -214,7 +214,7 @@ namespace Marus.Networking
                 return CustomHttpHandlerFactory();
             }
 
-#if UNITY_6000_5_OR_NEWER
+#if UNITY_6000_5 || UNITY_6000_5_OR_NEWER
             var handler = new UnityEngine.Networking.UnityHttpMessageHandler();
             handler.HttpForcedVersion = UnityEngine.Networking.HttpForcedVersion.HTTP2;
             return handler;
@@ -604,8 +604,8 @@ namespace Marus.Networking
                 using (var linked = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, _cancellationToken))
                 {
                     var response = pingClient.Ping(
-                        new PingMsg(), 
-                        deadline: DateTime.UtcNow.AddSeconds(timeout), 
+                        new PingMsg(),
+                        deadline: DateTime.UtcNow.AddSeconds(timeout),
                         cancellationToken: linked.Token
                     );
                     if (response != null && response.Value == 1)

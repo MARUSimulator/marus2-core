@@ -17,7 +17,7 @@ using System.Collections.Generic;
 using Marus.Utils;
 using UnityEngine;
 
-#if UNITY_6000_5_OR_NEWER
+#if UNITY_6000_5 || UNITY_6000_5_OR_NEWER
 using SensorId = UnityEngine.EntityId;
 #else
 using SensorId = System.Int32;
@@ -61,7 +61,7 @@ namespace Marus.Core
 
         private static SensorId GetSensorId(SensorBase sensor)
         {
-#if UNITY_6000_5_OR_NEWER
+#if UNITY_6000_5 || UNITY_6000_5_OR_NEWER
             return sensor.GetEntityId();
 #else
             return sensor.GetInstanceID();
