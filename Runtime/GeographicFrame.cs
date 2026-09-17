@@ -18,26 +18,44 @@ namespace Marus.Core
 {
     public class GeographicFrame
     {
-        // [Header("Tangent plane origin")] 
+        // [Header("Tangent plane origin")]
         public GeoPoint origin { get; }
         public Geometry.Vector3 originEcef { get; }
         public Transform transform { get; }
+        public float trueNorthOffset { get; set; }
 
-        [Header("Debug")] 
+        [Header("Debug")]
         public Geometry.Vector3 ecef;
 
-        public GeographicFrame(Transform transform, double latitude, double longitude, double altitude)
+        public GeographicFrame(Transform transform, double latitude, double longitude, double altitude, float trueNorthOffset = 0f)
         {
             this.transform = transform;
+            this.trueNorthOffset = trueNorthOffset;
             origin = new GeoPoint(latitude, longitude, altitude);
             originEcef = GeoPoint.Geodetic2ecef(origin);
-        }        
-        
+        }
+
         public GeoPoint Unity2Geo(Vector3 position)
         {
+            if (Mathf.Abs(trueNorthOffset) > 0.001f)
+            {
+                position = Quaternion.Euler(0f, -trueNorthOffset, 0f) * position;
+            }
             var enu = position.Unity2Map();
             ecef = GeoPoint.Enu2Ecef(this, enu);
             return new GeoPoint(ecef);
+        }
+
+        public Vector3 Geo2Unity(GeoPoint geoPoint)
+        {
+            var targetEcef = GeoPoint.Geodetic2ecef(geoPoint);
+            var enu = GeoPoint.Ecef2Enu(this, targetEcef);
+            var unityPos = enu.Map2Unity();
+            if (Mathf.Abs(trueNorthOffset) > 0.001f)
+            {
+                unityPos = Quaternion.Euler(0f, trueNorthOffset, 0f) * unityPos;
+            }
+            return unityPos;
         }
 
     }

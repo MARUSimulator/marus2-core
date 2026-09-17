@@ -21,9 +21,15 @@ namespace Marus.Utils
     internal static class SingletonManager
     {
         public static int MainThreadId { get; private set; }
-        public static bool IsQuitting { get; set; }
+        private static bool _isQuitting;
 
-        public static bool IsMainThread => MainThreadId == 0 || Thread.CurrentThread.ManagedThreadId == MainThreadId;
+        public static bool IsQuitting
+        {
+            get => Application.isPlaying && _isQuitting;
+            set => _isQuitting = value;
+        }
+
+        public static bool IsMainThread => !Application.isPlaying || MainThreadId == 0 || Thread.CurrentThread.ManagedThreadId == MainThreadId;
 
         static SingletonManager()
         {
@@ -33,14 +39,14 @@ namespace Marus.Utils
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void Reset()
         {
-            IsQuitting = false;
+            _isQuitting = false;
             MainThreadId = Thread.CurrentThread.ManagedThreadId;
         }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void BeforeSceneLoad()
         {
-            IsQuitting = false;
+            _isQuitting = false;
             MainThreadId = Thread.CurrentThread.ManagedThreadId;
             Application.quitting -= OnApplicationQuitting;
             Application.quitting += OnApplicationQuitting;
@@ -48,7 +54,7 @@ namespace Marus.Utils
 
         private static void OnApplicationQuitting()
         {
-            IsQuitting = true;
+            _isQuitting = true;
         }
     }
 
@@ -60,10 +66,25 @@ namespace Marus.Utils
         protected static T instance;
 
         /// <summary>
-        /// Check if an instance currently exists without triggering lazy instantiation.
-        /// Useful during OnDestroy or scene teardown to prevent creating unwanted ghost instances.
+        /// Check if an instance currently exists without creating a new GameObject.
+        /// In Edit mode or after domain reload, searches the scene if the static reference is null.
         /// </summary>
-        public static bool HasInstance => instance != null && !SingletonManager.IsQuitting;
+        public static bool HasInstance
+        {
+            get
+            {
+                if (SingletonManager.IsQuitting) return false;
+                if (instance != null) return true;
+                if (!SingletonManager.IsMainThread) return false;
+
+#if UNITY_6000_0_OR_NEWER
+                instance = Object.FindFirstObjectByType<T>(FindObjectsInactive.Include);
+#else
+                instance = Object.FindObjectOfType<T>();
+#endif
+                return instance != null;
+            }
+        }
 
         public static T Instance
         {
@@ -132,9 +153,20 @@ namespace Marus.Utils
             }
             else if (instance != this)
             {
-                Debug.LogWarning($"Duplicate instance of singleton {typeof(T).Name} detected on '{gameObject.name}'. Destroying duplicate.");
-                Destroy(gameObject);
-                return;
+                if (Application.isPlaying)
+                {
+                    Debug.LogWarning($"Duplicate instance of singleton {typeof(T).Name} detected on '{gameObject.name}'. Destroying duplicate.");
+                    Destroy(gameObject);
+                    return;
+                }
+            }
+        }
+
+        protected virtual void OnEnable()
+        {
+            if (instance == null)
+            {
+                instance = this as T;
             }
         }
 
