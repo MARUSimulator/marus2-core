@@ -1,13 +1,38 @@
-To install **MARUS2 Core** and its required core dependencies, add them directly to your Unity project's **`Packages/manifest.json`** file under the `"dependencies"` block:
+To install **MARUS2 Core** and its required dependencies, configure the OpenUPM scoped registry and add the package dependencies directly to your Unity project's **`Packages/manifest.json`**:
 
 ```json
 {
   "dependencies": {
     "com.marus2.proto": "https://github.com/MARUSimulator/marus2-proto.git#csharp",
-    "com.marus2.core": "https://github.com/MARUSimulator/marus2-core.git"
-  }
+    "com.marus2.core": "https://github.com/MARUSimulator/marus2-core.git",
+    "org.nuget.grpc.net.client": "2.60.0",
+    "org.nuget.google.protobuf": "3.25.1",
+    "org.nuget.system.io.pipelines": "8.0.0",
+    "com.cysharp.yetanotherhttphandler": "1.11.5"
+  },
+  "scopedRegistries": [
+    {
+      "name": "package.openupm.com",
+      "url": "https://package.openupm.com",
+      "scopes": [
+        "org.nuget",
+        "com.cysharp"
+      ]
+    }
+  ]
 }
 ```
+
+> **gRPC Dependencies & Transport**:
+> - **`org.nuget.grpc.net.client`** (`2.60.0`): Official .NET gRPC client library providing channel management, client calls, and bidirectional/client streaming.
+> - **`org.nuget.google.protobuf`** (`3.25.1`): Google Protocol Buffers runtime for message serialization.
+> - **`org.nuget.system.io.pipelines`** (`8.0.0`): High-performance memory stream pipeline library required by gRPC and HTTP/2 handlers.
+> - **`com.cysharp.yetanotherhttphandler`** (`1.11.5`): High-performance HTTP/2 handler powered by Rust's `hyper` library.
+> 
+> In modern Unity (Mono runtime on Linux/Windows), the built-in `UnityHttpMessageHandler` can deadlock or throw `NullReferenceException` on high-throughput streaming payloads larger than 64–128 KB (such as full LiDAR point clouds or high-resolution camera feeds) due to internal native buffer limits. `YetAnotherHttpHandler` bypasses Unity's native curl layer to provide non-blocking HTTP/2 cleartext (`h2c`) duplex streaming.
+> - All packages are hosted via OpenUPM under the `org.nuget` and `com.cysharp` scopes and are downloaded automatically by UPM once the scoped registry is defined.
+> - **Fallback**: If `YetAnotherHttpHandler` is not installed, `RosConnection` automatically falls back to Unity's native `UnityHttpMessageHandler` (suitable for lightweight sensors like IMU and Odometry).
+
 
 # Core usage
 
@@ -91,8 +116,22 @@ Alternatively, add them directly to your project's `Packages/manifest.json`:
 {
   "dependencies": {
     "com.marus2.proto": "file:../../path/to/marus2-proto",
-    "com.marus2.core": "file:../../path/to/marus2-core"
-  }
+    "com.marus2.core": "file:../../path/to/marus2-core",
+    "org.nuget.grpc.net.client": "2.60.0",
+    "org.nuget.google.protobuf": "3.25.1",
+    "org.nuget.system.io.pipelines": "8.0.0",
+    "com.cysharp.yetanotherhttphandler": "1.11.5"
+  },
+  "scopedRegistries": [
+    {
+      "name": "package.openupm.com",
+      "url": "https://package.openupm.com",
+      "scopes": [
+        "org.nuget",
+        "com.cysharp"
+      ]
+    }
+  ]
 }
 ```
 

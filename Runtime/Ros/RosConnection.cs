@@ -204,8 +204,11 @@ namespace Marus.Networking
 
         /// <summary>
         /// Creates an HttpMessageHandler compatible with Unity.
-        /// In Unity 6000.5 and above, utilizes UnityEngine.Networking.UnityHttpMessageHandler with HTTP/2 support.
-        /// Falls back to standard HttpClientHandler when not running in Unity 6000.5+.
+        /// On Unity 6000.5+, uses the native UnityHttpMessageHandler with HTTP/2 forced, which is the
+        /// only handler that correctly supports h2c (HTTP/2 cleartext) gRPC in Unity's Mono runtime.
+        /// On older Unity versions, tries SocketsHttpHandler (which supports HTTP/2 natively on
+        /// standard .NET runtimes), then falls back to UnityHttpMessageHandler via reflection,
+        /// and finally to a plain HttpClientHandler.
         /// </summary>
         private HttpMessageHandler CreateHttpMessageHandler()
         {
@@ -214,11 +217,57 @@ namespace Marus.Networking
                 return CustomHttpHandlerFactory();
             }
 
-#if UNITY_6000_5 || UNITY_6000_5_OR_NEWER
+            // 1. Prefer YetAnotherHttpHandler (Rust-based native hyper HTTP/2) if available.
+            // This provides native HTTP/2 duplex streaming, flow-control window scaling,
+            // and full h2c support without the buffer/deadlock limitations of UnityHttpMessageHandler.
+            var yahaType = Type.GetType("Cysharp.Net.Http.YetAnotherHttpHandler, Cysharp.Net.Http.YetAnotherHttpHandler")
+                ?? Type.GetType("Cysharp.Net.Http.YetAnotherHttpHandler, YetAnotherHttpHandler");
+            if (yahaType != null)
+            {
+                try
+                {
+                    var yahaHandler = (HttpMessageHandler)Activator.CreateInstance(yahaType);
+                    var http2OnlyProp = yahaType.GetProperty("Http2Only");
+                    if (http2OnlyProp != null)
+                    {
+                        http2OnlyProp.SetValue(yahaHandler, true);
+                    }
+                    Debug.Log("[RosConnection] Using YetAnotherHttpHandler (Rust/hyper native HTTP/2).");
+                    return yahaHandler;
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[RosConnection] Failed to instantiate YetAnotherHttpHandler: {ex.Message}. Falling back to UnityHttpMessageHandler.");
+                }
+            }
+
+#if UNITY_6000_5_OR_NEWER
+            // Unity 6.5+ ships UnityHttpMessageHandler with built-in h2c support.
+            // This is used as fallback when YetAnotherHttpHandler is not installed.
+            Debug.Log("[RosConnection] Using UnityHttpMessageHandler.");
             var handler = new UnityEngine.Networking.UnityHttpMessageHandler();
             handler.HttpForcedVersion = UnityEngine.Networking.HttpForcedVersion.HTTP2;
             return handler;
 #else
+            var socketsHandlerType = Type.GetType("System.Net.Http.SocketsHttpHandler, System.Net.Http");
+            if (socketsHandlerType != null)
+            {
+                try
+                {
+                    var socketsHandler = (HttpMessageHandler)Activator.CreateInstance(socketsHandlerType);
+                    var prop = socketsHandlerType.GetProperty("EnableMultipleHttp2Connections");
+                    if (prop != null)
+                    {
+                        prop.SetValue(socketsHandler, true);
+                    }
+                    return socketsHandler;
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[RosConnection] Could not instantiate SocketsHttpHandler: {ex.Message}. Falling back to UnityHttpMessageHandler.");
+                }
+            }
+
             var unityHandlerType = Type.GetType("UnityEngine.Networking.UnityHttpMessageHandler, UnityEngine.UnityWebRequestModule")
                 ?? Type.GetType("UnityEngine.Networking.UnityHttpMessageHandler, UnityEngine.CoreModule");
             if (unityHandlerType != null)

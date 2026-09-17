@@ -73,7 +73,7 @@ namespace Marus.Core
         bool _isSubscribedToRos;
 
         volatile bool _killSendMsgsThread;
-        Thread _sendMsgThread;
+        Task _sendMsgTask;
         ConcurrentQueue<TMsg> _msgQueue;
 
         /// <summary>
@@ -86,13 +86,23 @@ namespace Marus.Core
         /// </summary>
         private AsyncClientStreamingCall<TMsg, Std.Empty> StartClientStream()
         {
-            if (_streamingMethod == null || !RosConnection.HasInstance || !RosConnection.Instance.IsConnected)
+            if (_streamingMethod == null)
+            {
                 return null;
+            }
+
+            if (!RosConnection.HasInstance || !RosConnection.Instance.IsConnected)
+            {
+                return null;
+            }
 
             try
             {
                 var client = streamingClient;
-                if (client == null) return null;
+                if (client == null)
+                {
+                    return null;
+                }
 
                 // If the client instance changed after reconnection, re-bind delegate to the new client
                 if (_streamingFn == null || !object.ReferenceEquals(_streamingFn.Target, client))
@@ -118,8 +128,9 @@ namespace Marus.Core
 
                 return _streamingFn(null, null, RosConnection.Instance.CancellationToken);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Debug.LogError($"[SensorStreamer] StartClientStream exception for {address}: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
                 return null;
             }
         }
@@ -234,28 +245,24 @@ namespace Marus.Core
             {
                 _msgQueue = new ConcurrentQueue<TMsg>();
             }
-            if (_sendMsgThread == null)
+            if (_sendMsgTask == null || _sendMsgTask.IsCompleted)
             {
                 _killSendMsgsThread = false;
-                _sendMsgThread = new Thread(SendMessagesThread) { IsBackground = true };
-                _sendMsgThread.Priority = System.Threading.ThreadPriority.Highest;
-                _sendMsgThread.Start();
+                _sendMsgTask = Task.Run(SendMessagesTask);
             }
         }
 
         private void OnEnable()
         {
             SubscribeToRos();
-            if (_sendMsgThread == null && _sensor != null)
+            if ((_sendMsgTask == null || _sendMsgTask.IsCompleted) && _sensor != null)
             {
                 if (_msgQueue == null)
                 {
                     _msgQueue = new ConcurrentQueue<TMsg>();
                 }
                 _killSendMsgsThread = false;
-                _sendMsgThread = new Thread(SendMessagesThread) { IsBackground = true };
-                _sendMsgThread.Priority = System.Threading.ThreadPriority.Highest;
-                _sendMsgThread.Start();
+                _sendMsgTask = Task.Run(SendMessagesTask);
             }
         }
 
@@ -330,85 +337,90 @@ namespace Marus.Core
         }
 
         /// <summary>
-        /// Background worker thread dedicated to writing sensor messages to the gRPC stream.
-        /// Handles reconnection asynchronously without blocking the Unity main rendering thread.
+        /// Background worker task dedicated to writing sensor messages to the gRPC stream.
+        /// Uses async/await with Task.Delay (not Thread.Sleep) so the thread pool is not
+        /// blocked during waits, and the task lifecycle is properly tracked via _sendMsgTask.
         /// </summary>
-        private async void SendMessagesThread()
+        private async Task SendMessagesTask()
         {
-            int count = 0;
             var sw = new System.Diagnostics.Stopwatch();
-            sw.Start();
-            while (true)
+
+            try
             {
-                if (_killSendMsgsThread)
+                while (!_killSendMsgsThread)
                 {
-                    return;
-                }
-
-                if (!RosConnection.HasInstance || !RosConnection.Instance.IsConnected)
-                {
-                    streamHandle = null;
-                    Thread.Sleep(100);
-                    continue;
-                }
-
-                // Dynamically establish/rebind client stream if not yet active
-                if (streamHandle == null && _streamingMethod != null)
-                {
-                    try
-                    {
-                        streamHandle = StartClientStream();
-                    }
-                    catch
+                    if (!RosConnection.HasInstance || !RosConnection.Instance.IsConnected)
                     {
                         streamHandle = null;
-                    }
-
-                    if (streamHandle == null)
-                    {
-                        Thread.Sleep(200);
+                        try { await Task.Delay(100); } catch (OperationCanceledException) { return; }
                         continue;
                     }
-                }
 
-                while (_msgQueue.TryDequeue(out var msg))
-                {
-                    if (_streamWriter == null)
+                    // Dynamically establish/rebind client stream if not yet active
+                    if (streamHandle == null && _streamingMethod != null)
                     {
-                        break;
-                    }
-
-                    try
-                    {
-                        await _streamWriter.WriteAsync(msg);
-                        count++;
-                    }
-                    catch (Exception)
-                    {
-                        // WriteAsync failed. Invalidate stream handle.
-                        // If the server port is closed (container stopped), trigger OnConnectionDropped immediately.
-                        streamHandle = null;
-                        if (RosConnection.HasInstance && RosConnection.Instance.IsConnected && !RosConnection.Instance.IsServerPortOpen(50))
+                        try
                         {
-                            RosConnection.Instance.OnConnectionDropped();
+                            streamHandle = StartClientStream();
                         }
-                        break;
+                        catch (Exception ex)
+                        {
+                            Debug.LogError($"[SensorStreamer] Error calling StartClientStream for {address}: {ex}");
+                            streamHandle = null;
+                        }
+
+                        if (streamHandle == null)
+                        {
+                            try { await Task.Delay(200); } catch (OperationCanceledException) { return; }
+                            continue;
+                        }
+                    }
+
+                    sw.Restart(); // measure time spent sending this batch
+
+                    while (_msgQueue.TryDequeue(out var msg))
+                    {
+                        if (_streamWriter == null)
+                        {
+                            Debug.LogWarning($"[SensorStreamer] _streamWriter is null for {address}!");
+                            break;
+                        }
+
+                        try
+                        {
+                            await _streamWriter.WriteAsync(msg);
+                        }
+                        catch (Exception ex)
+                        {
+                            string statusDetail = "";
+                            if (ex is Grpc.Core.RpcException rpcEx)
+                                statusDetail = $" [gRPC status={rpcEx.StatusCode}, detail='{rpcEx.Status.Detail}']";
+                            Debug.LogError($"[SensorStreamer] WriteAsync failed for {address}{statusDetail}: {ex.GetType().Name}: {ex.Message}");
+
+                            // WriteAsync failed. Invalidate stream handle.
+                            // If the server port is closed (container stopped), trigger OnConnectionDropped immediately.
+                            streamHandle = null;
+                            if (RosConnection.HasInstance && RosConnection.Instance.IsConnected && !RosConnection.Instance.IsServerPortOpen(50))
+                            {
+                                RosConnection.Instance.OnConnectionDropped();
+                            }
+                            break;
+                        }
+                    }
+
+                    // Sleep for the remainder of the update interval, accounting for time already spent sending.
+                    var dt = 1000.0 / UpdateFrequency; // target interval in ms
+                    var elapsed = sw.ElapsedMilliseconds;
+                    var sleepTime = (int)(dt - elapsed);
+                    if (sleepTime > 1)
+                    {
+                        try { await Task.Delay(sleepTime); } catch (OperationCanceledException) { return; }
                     }
                 }
-                var dt = 1000.0 / UpdateFrequency; // in ms
-                var sleepTime = dt - sw.ElapsedMilliseconds;
-                if (sleepTime > 1) // minimum is 1 miliseconds
-                {
-                    Thread.Sleep((int)sleepTime);
-                }
-
-                if (sw.ElapsedMilliseconds > 5000)
-                {
-                    sw.Restart();
-                    // check real frequency
-                    // Debug.Log($"{Time.fixedTimeAsDouble}");
-                }
-
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[SensorStreamer] SendMessagesTask FATAL unhandled exception for {address}: {ex}");
             }
         }
 
@@ -434,8 +446,8 @@ namespace Marus.Core
         {
             UnsubscribeFromRos();
             _killSendMsgsThread = true;
-            _sendMsgThread?.Join(500);
-            _sendMsgThread = null;
+            _sendMsgTask?.Wait(500);
+            _sendMsgTask = null;
             streamHandle = null;
         }
 
@@ -443,8 +455,8 @@ namespace Marus.Core
         {
             UnsubscribeFromRos();
             _killSendMsgsThread = true;
-            _sendMsgThread?.Join(500);
-            _sendMsgThread = null;
+            _sendMsgTask?.Wait(500);
+            _sendMsgTask = null;
             streamHandle = null;
         }
 
