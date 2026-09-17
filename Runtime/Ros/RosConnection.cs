@@ -401,15 +401,14 @@ namespace Marus.Networking
         {
             if (_heartbeatTask == null || _heartbeatTask.IsCompleted)
             {
-                _heartbeatTask = HeartbeatLoop(_cancellationToken);
+                _heartbeatTask = Task.Run(() => HeartbeatLoop(_cancellationToken));
             }
         }
 
         /// <summary>
         /// Background heartbeat task.
-        /// Probes the server port via IsServerPortOpen(100) every second.
-        /// This detects container shutdown or port closure in &lt; 0.1ms without issuing an HTTP/2 gRPC call
-        /// that could block or throw curl broken pipe errors in UnityHttpMessageHandler.
+        /// Runs strictly on the thread pool (via Task.Run and ConfigureAwait(false))
+        /// so it NEVER executes on or blocks Unity's main rendering thread.
         /// </summary>
         async Task HeartbeatLoop(CancellationToken cancellationToken)
         {
@@ -417,7 +416,7 @@ namespace Marus.Networking
             {
                 try
                 {
-                    await Task.Delay(1000, cancellationToken);
+                    await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -426,7 +425,7 @@ namespace Marus.Networking
 
                 if (_connected && !cancellationToken.IsCancellationRequested)
                 {
-                    if (!IsServerPortOpen(100))
+                    if (!IsServerPortOpen(20))
                     {
                         if (_connected && !cancellationToken.IsCancellationRequested)
                         {
