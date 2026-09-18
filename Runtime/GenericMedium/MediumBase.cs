@@ -12,87 +12,142 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using UnityEngine;
 using System;
+using System.Collections.Generic;
+using Marus.Utils;
+using UnityEngine;
 
-namespace Marus.Communications.Acoustics
+namespace Marus.Core
 {
     /// <summary>
-    /// This class serves as base for a medium for sending/receiving messages.
+    /// Base class for communication media in MARUS, inheriting Singleton so each medium
+    /// can be accessed globally via TSelf.Instance.
     /// </summary>
-    [RequireComponent(typeof(BoxVolume))]
-    public abstract class MediumBase : MonoBehaviour
+    public abstract class MediumBase<TSelf> : Singleton<TSelf> where TSelf : Component
     {
+        public string Name;
+    }
 
-        BoxVolume _boxVolume;
+    /// <summary>
+    /// Generic communication medium managing typed message routing and device lifecycle.
+    /// Provides null-safe registration, unregistration, safe broadcast iteration,
+    /// and distance calculations.
+    /// </summary>
+    /// <typeparam name="TSelf">The concrete medium implementation (CRTP).</typeparam>
+    /// <typeparam name="TMessage">The base message type for this medium.</typeparam>
+    /// <typeparam name="TDevice">The device/transceiver component type.</typeparam>
+    public abstract class MediumBase<TSelf, TMessage, TDevice> : MediumBase<TSelf>
+        where TSelf : MediumBase<TSelf, TMessage, TDevice>
+        where TDevice : Component
+        where TMessage : class
+    {
+        public List<TDevice> RegisteredDevices = new List<TDevice>();
 
-        protected void Awake()
+        protected override void Initialize()
         {
-            _boxVolume = GetComponent<BoxVolume>();
+            base.Initialize();
+            if (RegisteredDevices == null)
+            {
+                RegisteredDevices = new List<TDevice>();
+            }
         }
 
-        // /// <summary>
-        // /// Registers devices so messages can be broadcast to them.
-        // /// </summary>
-        // public virtual void Register(AcousticDevice<T> device)
-        // {
-        //     RegisteredDevices.Add(device);
-        // }
-
-        // /// <summary>
-        // /// Broadcasts message to all registered objects
-        // /// </summary>
-        // /// <param name="msg">Message object to be sent.</param>
-        // public virtual void Broadcast(T msg)
-        // {
-        //     foreach (var device in RegisteredDevices)
-        //     {
-        //         if (msg.sender != device)
-        //         {
-        //             this.Transmit(msg, device);
-        //         }
-        //     }
-        // }
-
-        // /// <summary>
-        // /// Transmit message to single other object.
-        // /// Message will only be sent if other object is in range of the sender device. 
-        // /// Method assumes distance and range are of the same unit and magnitude. Default is meters (m).
-        // /// </summary>
-        // /// <param name="msg">Message object to be sent.</param>
-        // /// <param name="receiver">Object which message is sent to.</param>
-        // /// <returns>True if transmission succeeded, false if not (not in range).</returns>
-        // public virtual Boolean Transmit(T msg, AcousticDevice<T> receiver)
-        // {
-        //     AcousticDevice<T> sender = msg.sender;
-        //     float distance = DistanceFromTo(sender, receiver);
-        //     if (sender.Range >= distance)
-        //     {
-        //         receiver.Receive(msg);
-        //         return true;
-        //     }
-        //     return false;
-        // }
-
-        public bool IsPointInside(Transform transform)
+        /// <summary>
+        /// Registers a device so messages can be broadcast or transmitted to it.
+        /// </summary>
+        public virtual void Register(TDevice device)
         {
-            if (_boxVolume.Type == BoxVolume.BoxType.World)
-                return true;
+            if (device != null && !RegisteredDevices.Contains(device))
+            {
+                RegisteredDevices.Add(device);
+            }
+        }
 
-            var pos = transform.position;
-            if (_boxVolume.Type == BoxVolume.BoxType.HalfSpace)
+        /// <summary>
+        /// Unregisters a device so messages are no longer routed to it.
+        /// </summary>
+        public virtual void Unregister(TDevice device)
+        {
+            if (device != null)
             {
-                var rotation = _boxVolume.rotate;
-                rotation.ToAngleAxis(out _, out Vector3 axis);
-                var center = _boxVolume.bounds.center;
-                var relativeP = pos - center;
-                return Vector3.Dot(relativeP, axis) > 0;
+                RegisteredDevices.Remove(device);
             }
-            if (_boxVolume.Type == BoxVolume.BoxType.Box)
+        }
+
+        /// <summary>
+        /// Broadcasts a message to all registered devices in range.
+        /// Automatically prunes any destroyed devices safely during backwards iteration.
+        /// </summary>
+        public virtual void Broadcast(TMessage msg)
+        {
+            if (msg == null)
             {
-                throw new NotImplementedException("Box type not yet supported");
+                return;
             }
-            throw new Exception("Invalid medium box type");
+
+            for (int i = RegisteredDevices.Count - 1; i >= 0; i--)
+            {
+                var device = RegisteredDevices[i];
+                if (device == null)
+                {
+                    RegisteredDevices.RemoveAt(i);
+                    continue;
+                }
+
+                if (device.gameObject.activeInHierarchy && !IsSender(msg, device))
+                {
+                    Transmit(msg, device);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Transmits a message to a specific receiver device.
+        /// Derived classes implement physical propagation constraints (range, frequency, delay).
+        /// </summary>
+        public abstract bool Transmit(TMessage msg, TDevice receiver);
+
+        /// <summary>
+        /// Identifies whether a given device was the sender of the message.
+        /// </summary>
+        protected abstract bool IsSender(TMessage msg, TDevice device);
+
+        /// <summary>
+        /// Calculates Euclidean distance between two devices in Unity world space.
+        /// </summary>
+        public virtual float DistanceFromTo(TDevice deviceA, TDevice deviceB)
+        {
+            if (deviceA == null || deviceB == null)
+            {
+                return float.MaxValue;
+            }
+            return Vector3.Distance(deviceA.transform.position, deviceB.transform.position);
+        }
+
+        /// <summary>
+        /// Calculates the transmission range/distance between two devices.
+        /// Defaults to Euclidean distance. Override to add protocol or medium-specific constraints.
+        /// </summary>
+        public virtual float Range(TDevice source, TDevice target)
+        {
+            return DistanceFromTo(source, target);
+        }
+
+        /// <summary>
+        /// Retrieves a registered device by its integer ID.
+        /// Override in derived mediums whose devices define an integer identifier.
+        /// </summary>
+        public virtual TDevice GetDeviceById(int id)
+        {
+            return null;
+        }
+
+        /// <summary>
+        /// Retrieves a registered device of type TSub by its integer ID.
+        /// </summary>
+        public virtual TSub GetDeviceById<TSub>(int id) where TSub : class
+        {
+            return GetDeviceById(id) as TSub;
         }
     }
 }
