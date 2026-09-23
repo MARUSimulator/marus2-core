@@ -91,7 +91,8 @@ namespace Marus.Core
                 return null;
             }
 
-            if (!RosConnection.HasInstance || !RosConnection.Instance.IsConnected)
+            var ros = RosConnection.Instance;
+            if (!RosConnection.HasInstance || ros == null || !ros.IsConnected)
             {
                 return null;
             }
@@ -349,7 +350,8 @@ namespace Marus.Core
             {
                 while (!_killSendMsgsThread)
                 {
-                    if (!RosConnection.HasInstance || !RosConnection.Instance.IsConnected)
+                    var ros = RosConnection.Instance;
+                    if (!RosConnection.HasInstance || ros == null || !ros.IsConnected)
                     {
                         streamHandle = null;
                         try { await Task.Delay(100); } catch (OperationCanceledException) { return; }
@@ -400,9 +402,9 @@ namespace Marus.Core
                             // WriteAsync failed. Invalidate stream handle.
                             // If the server port is closed (container stopped), trigger OnConnectionDropped immediately.
                             streamHandle = null;
-                            if (RosConnection.HasInstance && RosConnection.Instance.IsConnected && !RosConnection.Instance.IsServerPortOpen(50))
+                            if (RosConnection.HasInstance && ros != null && ros.IsConnected && !ros.IsServerPortOpen(50))
                             {
-                                RosConnection.Instance.OnConnectionDropped();
+                                ros.OnConnectionDropped();
                             }
                             break;
                         }

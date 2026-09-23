@@ -21,33 +21,89 @@ namespace Marus.Utils
     internal static class SingletonManager
     {
         public static int MainThreadId { get; private set; }
-        private static bool _isQuitting;
+        private static volatile bool _isPlaying;
+        private static volatile bool _isQuitting;
+
+        public static bool IsMainThread => MainThreadId != 0 && Thread.CurrentThread.ManagedThreadId == MainThreadId;
+
+        public static bool IsPlaying
+        {
+            get
+            {
+                if (IsMainThread)
+                {
+                    _isPlaying = Application.isPlaying;
+                }
+                return _isPlaying;
+            }
+        }
 
         public static bool IsQuitting
         {
-            get => Application.isPlaying && _isQuitting;
+            get => IsPlaying ? _isQuitting : false;
             set => _isQuitting = value;
         }
-
-        public static bool IsMainThread => !Application.isPlaying || MainThreadId == 0 || Thread.CurrentThread.ManagedThreadId == MainThreadId;
 
         static SingletonManager()
         {
             MainThreadId = Thread.CurrentThread.ManagedThreadId;
+#if UNITY_EDITOR
+            _isPlaying = UnityEditor.EditorApplication.isPlaying;
+#else
+            _isPlaying = true;
+#endif
         }
+
+#if UNITY_EDITOR
+        [UnityEditor.InitializeOnLoadMethod]
+        private static void InitEditor()
+        {
+            MainThreadId = Thread.CurrentThread.ManagedThreadId;
+            _isPlaying = UnityEditor.EditorApplication.isPlayingOrWillChangePlaymode;
+            _isQuitting = false;
+            UnityEditor.EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
+            UnityEditor.EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+        }
+
+        private static void OnPlayModeStateChanged(UnityEditor.PlayModeStateChange state)
+        {
+            switch (state)
+            {
+                case UnityEditor.PlayModeStateChange.EnteredEditMode:
+                    MainThreadId = Thread.CurrentThread.ManagedThreadId;
+                    _isPlaying = false;
+                    _isQuitting = false;
+                    break;
+                case UnityEditor.PlayModeStateChange.ExitingEditMode:
+                    MainThreadId = Thread.CurrentThread.ManagedThreadId;
+                    _isQuitting = false;
+                    break;
+                case UnityEditor.PlayModeStateChange.EnteredPlayMode:
+                    MainThreadId = Thread.CurrentThread.ManagedThreadId;
+                    _isPlaying = true;
+                    _isQuitting = false;
+                    break;
+                case UnityEditor.PlayModeStateChange.ExitingPlayMode:
+                    _isQuitting = true;
+                    break;
+            }
+        }
+#endif
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void Reset()
         {
-            _isQuitting = false;
             MainThreadId = Thread.CurrentThread.ManagedThreadId;
+            _isQuitting = false;
+            _isPlaying = true;
         }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void BeforeSceneLoad()
         {
-            _isQuitting = false;
             MainThreadId = Thread.CurrentThread.ManagedThreadId;
+            _isQuitting = false;
+            _isPlaying = true;
             Application.quitting -= OnApplicationQuitting;
             Application.quitting += OnApplicationQuitting;
         }
@@ -111,14 +167,14 @@ namespace Marus.Utils
 #endif
                     if (instance == null)
                     {
-                        if (SingletonManager.IsQuitting || !Application.isPlaying)
+                        if (SingletonManager.IsQuitting || !SingletonManager.IsPlaying)
                         {
                             return null;
                         }
 
                         GameObject obj = new GameObject(typeof(T).Name);
                         instance = obj.AddComponent<T>();
-                        if (Application.isPlaying && instance.transform.parent == null)
+                        if (SingletonManager.IsPlaying && instance.transform.parent == null)
                         {
                             DontDestroyOnLoad(instance.gameObject);
                         }
@@ -145,7 +201,7 @@ namespace Marus.Utils
             if (instance == null)
             {
                 instance = this as T;
-                if (Application.isPlaying && transform.parent == null)
+                if (SingletonManager.IsPlaying && transform.parent == null)
                 {
                     DontDestroyOnLoad(gameObject);
                 }
@@ -153,7 +209,7 @@ namespace Marus.Utils
             }
             else if (instance != this)
             {
-                if (Application.isPlaying)
+                if (SingletonManager.IsPlaying)
                 {
                     Debug.LogWarning($"Duplicate instance of singleton {typeof(T).Name} detected on '{gameObject.name}'. Destroying duplicate.");
                     Destroy(gameObject);

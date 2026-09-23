@@ -305,9 +305,10 @@ namespace Marus.Networking
                 // WriteAsync failed. Invalidate streamHandle.
                 // If the server port is closed (container stopped), trigger OnConnectionDropped immediately.
                 streamHandle = null;
-                if (RosConnection.HasInstance && RosConnection.Instance.IsConnected && !RosConnection.Instance.IsServerPortOpen(50))
+                var ros = RosConnection.Instance;
+                if (RosConnection.HasInstance && ros != null && ros.IsConnected && !ros.IsServerPortOpen(50))
                 {
-                    RosConnection.Instance.OnConnectionDropped();
+                    ros.OnConnectionDropped();
                 }
             }
         }
